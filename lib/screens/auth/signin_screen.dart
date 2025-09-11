@@ -52,6 +52,14 @@ class _SignInScreenState extends State<SignInScreen> {
           // Check if widget is still in the tree
           if (response['success'] == true && response.containsKey('token')) {
             await _saveToken(response['token']);
+
+            // Save user name if available in response
+            final prefs = await SharedPreferences.getInstance();
+            if (response.containsKey('user') && response['user'] != null) {
+              await prefs.setString(
+                  'user_name', response['user']['name'] ?? 'User');
+            }
+
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Login Successful!')),
             );

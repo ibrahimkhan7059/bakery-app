@@ -37,10 +37,10 @@ class _SplashScreenState extends State<SplashScreen>
 
     _controller.forward();
 
-    // Navigate to SignInScreen after animation
+    // Navigate to HomeScreen after animation
     Future.delayed(const Duration(seconds: 3), () {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        Navigator.pushReplacementNamed(context, '/signin');
+        Navigator.pushReplacementNamed(context, '/home');
       });
     });
   }
@@ -54,8 +54,7 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   Widget build(BuildContext context) {
     // Use a slightly darker background
-    const backgroundColor =
-        Color(0xFFF3E9E2); // Slightly darker than before
+    const backgroundColor = Color(0xFFF3E9E2); // Slightly darker than before
 
     return Scaffold(
       backgroundColor: backgroundColor,

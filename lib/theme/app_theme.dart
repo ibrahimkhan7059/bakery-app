@@ -118,4 +118,21 @@ class AppTheme {
       ),
     ),
   );
+
+  static const Color primaryColor = Color(0xFFFF6F61); // Coral color
+
+  static ThemeData get lightTheme {
+    return ThemeData(
+      primaryColor: primaryColor,
+      colorScheme: const ColorScheme.light(
+        primary: primaryColor,
+        secondary: primaryColor,
+      ),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: primaryColor,
+        foregroundColor: Colors.white,
+      ),
+      // Add more theme customization here
+    );
+  }
 }

@@ -2,7 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/api_service.dart';
 import '../models/category.dart';
+import '../models/product.dart';
+import '../theme/app_theme.dart';
 import 'category_products_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../widgets/app_drawer.dart';
+import 'custom_cake_options_screen.dart';
+import 'menu_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -12,10 +18,13 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _selectedIndex = 0;
-  List<Category> categories = [];
-  bool _isLoadingCategories = true;
   final ApiService _apiService = ApiService();
+  List<Category> categories = [];
+  List<Product> popularProducts = [];
+  bool _isLoadingCategories = true;
+  final bool _isLoadingProducts = true;
+  int cartItemCount = 0;
+  int _selectedIndex = 0;
 
   final List<Map<String, dynamic>> popularItems = [
     {
@@ -45,16 +54,28 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadCategories();
+    _loadCartCount();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Refresh cart count when screen becomes active
+    _loadCartCount();
   }
 
   Future<void> _loadCategories() async {
     try {
+      print('Loading categories...'); // Debug log
       final fetchedCategories = await _apiService.getCategories();
+      print('Categories loaded: ${fetchedCategories.length}'); // Debug log
+
       setState(() {
         categories = fetchedCategories;
         _isLoadingCategories = false;
       });
     } catch (e) {
+      print('Error loading categories: $e'); // Debug log
       setState(() {
         _isLoadingCategories = false;
       });
@@ -63,9 +84,40 @@ class _HomeScreenState extends State<HomeScreen> {
           SnackBar(
             content: Text('Failed to load categories: ${e.toString()}'),
             backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'Retry',
+              textColor: Colors.white,
+              onPressed: _loadCategories,
+            ),
           ),
         );
       }
+    }
+  }
+
+  Future<void> _loadCartCount() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cartItems = prefs.getStringList('cart_items') ?? [];
+      setState(() {
+        cartItemCount = cartItems.length;
+      });
+    } catch (e) {
+      setState(() {
+        cartItemCount = 0;
+      });
+    }
+  }
+
+  void _navigateToCart() async {
+    final result = await Navigator.pushNamed(context, '/cart');
+    // Refresh cart count when returning from cart screen
+    _loadCartCount();
+    if (result == true || result == null) {
+      setState(() {
+        _selectedIndex = 0; // Reset to Home when returning
+      });
     }
   }
 
@@ -74,12 +126,34 @@ class _HomeScreenState extends State<HomeScreen> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: theme.colorScheme.background,
+      backgroundColor: theme.colorScheme.surface,
+      drawer: const AppDrawer(),
       appBar: AppBar(
         elevation: 0,
         backgroundColor: theme.primaryColor,
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: true,
         toolbarHeight: 70,
+        leading: Builder(
+          builder: (context) => Container(
+            margin: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(
+                color: Colors.white.withOpacity(0.3),
+                width: 1,
+              ),
+            ),
+            child: IconButton(
+              icon: const Icon(
+                Icons.menu,
+                color: Colors.white,
+                size: 22,
+              ),
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            ),
+          ),
+        ),
         systemOverlayStyle: SystemUiOverlayStyle(
           statusBarColor: theme.colorScheme.surface,
           statusBarIconBrightness: theme.brightness == Brightness.dark
@@ -90,24 +164,6 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 8),
           child: Row(
             children: [
-              Container(
-                height: 45,
-                width: 45,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(
-                    color: Colors.white.withOpacity(0.3),
-                    width: 1,
-                  ),
-                ),
-                child: const Icon(
-                  Icons.person,
-                  color: Colors.white,
-                  size: 22,
-                ),
-              ),
-              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -144,8 +200,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     color: Colors.white,
                     size: 20,
                   ),
-                  onPressed: () {
-                    // TODO: Implement search
+                  onPressed: () async {
+                    final result =
+                        await Navigator.pushNamed(context, '/search');
+                    if (result == true || result == null) {
+                      setState(() {
+                        _selectedIndex = 0; // Reset to Home when returning
+                      });
+                    }
                   },
                 ),
               ),
@@ -161,36 +223,36 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     IconButton(
                       icon: const Icon(
-                        Icons.shopping_cart_outlined,
+                        Icons.shopping_cart,
                         color: Colors.white,
                         size: 20,
                       ),
-                      onPressed: () {
-                        // TODO: Implement cart
-                      },
+                      onPressed: _navigateToCart,
                     ),
-                    Positioned(
-                      right: 6,
-                      top: 6,
-                      child: Container(
-                        height: 14,
-                        width: 14,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(7),
-                        ),
-                        child: Center(
+                    if (cartItemCount > 0)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                          ),
                           child: Text(
-                            '2',
-                            style: TextStyle(
-                              color: theme.primaryColor,
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
+                            '$cartItemCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
                             ),
+                            textAlign: TextAlign.center,
                           ),
                         ),
                       ),
-                    ),
                   ],
                 ),
               ),
@@ -226,7 +288,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: _buildBottomNavigationBar(theme),
+      bottomNavigationBar: _buildBottomNavigationBar(),
     );
   }
 
@@ -370,7 +432,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (categories.isEmpty) {
-      return Container(
+      return SizedBox(
         height: 100,
         child: Center(
           child: Text(
@@ -394,14 +456,19 @@ class _HomeScreenState extends State<HomeScreen> {
             width: 80,
             margin: const EdgeInsets.only(right: 16),
             child: GestureDetector(
-              onTap: () {
-                Navigator.push(
+              onTap: () async {
+                final result = await Navigator.push(
                   context,
                   MaterialPageRoute(
                     builder: (context) =>
                         CategoryProductsScreen(category: category),
                   ),
                 );
+                if (result == true || result == null) {
+                  setState(() {
+                    _selectedIndex = 0; // Reset to Home when returning
+                  });
+                }
               },
               child: Column(
                 children: [
@@ -503,7 +570,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildPopularItemsList(ThemeData theme) {
     return SizedBox(
-      height: 280,
+      height: 300, // Increased height to prevent overflow
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         itemCount: popularItems.length,
@@ -542,69 +609,81 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        item['name'],
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: const Color(0xFF333333),
+                Expanded(
+                  // Make the content area flexible
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment
+                          .spaceBetween, // Distribute space evenly
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item['name'],
+                              style: theme.textTheme.bodyLarge?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: const Color(0xFF333333),
+                              ),
+                              maxLines: 1, // Limit to 1 line to save space
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              item['description'],
+                              style: theme.textTheme.bodySmall,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.star,
+                                  size: 16,
+                                  color: Colors.amber[600],
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  item['rating'].toString(),
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        item['description'],
-                        style: theme.textTheme.bodySmall,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.star,
-                            size: 16,
-                            color: Colors.amber[600],
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            item['rating'].toString(),
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              fontWeight: FontWeight.w500,
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              item['price'],
+                              style: theme.textTheme.bodyLarge?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: theme.primaryColor,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            item['price'],
-                            style: theme.textTheme.bodyLarge?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: theme.primaryColor,
+                            Container(
+                              height: 32,
+                              width: 32,
+                              decoration: BoxDecoration(
+                                color: theme.primaryColor,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(
+                                Icons.add,
+                                color: Colors.white,
+                                size: 20,
+                              ),
                             ),
-                          ),
-                          Container(
-                            height: 32,
-                            width: 32,
-                            decoration: BoxDecoration(
-                              color: theme.primaryColor,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Icon(
-                              Icons.add,
-                              color: Colors.white,
-                              size: 20,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -698,33 +777,73 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildBottomNavigationBar(ThemeData theme) {
+  Widget _buildBottomNavigationBar() {
     return BottomNavigationBar(
+      type: BottomNavigationBarType.fixed,
+      backgroundColor: Colors.white,
+      selectedItemColor: AppTheme.primaryColor,
+      unselectedItemColor: Colors.grey,
       currentIndex: _selectedIndex,
-      onTap: (index) {
+      onTap: (index) async {
         setState(() {
           _selectedIndex = index;
         });
+        switch (index) {
+          case 0:
+            // Already on home
+            break;
+          case 1:
+            final result = await Navigator.pushNamed(context, '/bulk-order');
+            if (result == true || result == null) {
+              setState(() {
+                _selectedIndex = 0; // Reset to Home
+              });
+            }
+            break;
+          case 2:
+            final result = await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const CustomCakeOptionsScreen(),
+              ),
+            );
+            if (result == true || result == null) {
+              setState(() {
+                _selectedIndex = 0; // Reset to Home
+              });
+            }
+            break;
+          case 3:
+            final result = await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const MenuScreen(),
+              ),
+            );
+            if (result == true || result == null) {
+              setState(() {
+                _selectedIndex = 0; // Reset to Home
+              });
+            }
+            break;
+        }
       },
-      type: BottomNavigationBarType.fixed,
-      selectedItemColor: theme.primaryColor,
-      unselectedItemColor: const Color(0xFF666666),
       items: const [
         BottomNavigationBarItem(
           icon: Icon(Icons.home),
           label: 'Home',
         ),
         BottomNavigationBarItem(
-          icon: Icon(Icons.search),
-          label: 'Search',
+          icon: Icon(Icons.business),
+          label: 'Bulk Order',
         ),
         BottomNavigationBarItem(
-          icon: Icon(Icons.shopping_cart),
-          label: 'Cart',
+          icon: Icon(Icons.cake),
+          label: 'Custom Cake',
         ),
         BottomNavigationBarItem(
-          icon: Icon(Icons.person),
-          label: 'Profile',
+          icon: Icon(Icons.menu_book),
+          label: 'Menu',
         ),
       ],
     );

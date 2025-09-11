@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 // import 'otp_screen.dart'; // Commented out OTP screen import
 import '../../services/api_service.dart'; // Assuming your ApiService is here
 import 'signin_screen.dart'; // For navigation
-import '../home_screen.dart'; // Added import for HomeScreen
+// Added import for HomeScreen
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});

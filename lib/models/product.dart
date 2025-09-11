@@ -9,6 +9,8 @@ class Product {
   final String? categoryName;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final List<String>? allergens;
+  final Product? alternativeProduct;
 
   Product({
     required this.id,
@@ -21,9 +23,25 @@ class Product {
     this.categoryName,
     required this.createdAt,
     required this.updatedAt,
+    this.allergens,
+    this.alternativeProduct,
   });
 
   factory Product.fromJson(Map<String, dynamic> json) {
+    List<String>? allergensList;
+    if (json['allergens'] is List) {
+      allergensList =
+          (json['allergens'] as List).map((e) => e.toString()).toList();
+    } else if (json['allergens'] is String &&
+        (json['allergens'] as String).isNotEmpty) {
+      allergensList = (json['allergens'] as String)
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    } else {
+      allergensList = [];
+    }
     return Product(
       id: json['id'],
       name: json['name'],
@@ -33,8 +51,16 @@ class Product {
       image: json['image'],
       categoryId: json['category_id'],
       categoryName: json['category']?['name'],
-      createdAt: DateTime.parse(json['created_at']),
-      updatedAt: DateTime.parse(json['updated_at']),
+      createdAt: json['created_at'] != null
+          ? DateTime.parse(json['created_at'])
+          : DateTime.now(),
+      updatedAt: json['updated_at'] != null
+          ? DateTime.parse(json['updated_at'])
+          : DateTime.now(),
+      allergens: allergensList,
+      alternativeProduct: json['alternative_product'] != null
+          ? Product.fromJson(json['alternative_product'])
+          : null,
     );
   }
 
@@ -50,6 +76,8 @@ class Product {
       'category_name': categoryName,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
+      'allergens': allergens,
+      'alternative_product': alternativeProduct?.toJson(),
     };
   }
 
@@ -60,12 +88,12 @@ class Product {
         return image!;
       }
       // Otherwise, construct full URL using your network IP
-      return 'http:// 127.0.0.1:8000/storage/$image';
+      return image!;
     }
     return ''; // Return empty string for placeholder handling
   }
 
   String get formattedPrice {
-    return 'Rs. ${price.toStringAsFixed(0)}';
+    return 'PKR ${price.toStringAsFixed(0)}';
   }
 }
