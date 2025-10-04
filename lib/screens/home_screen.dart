@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:async';
 import '../services/api_service.dart';
 import '../models/category.dart';
 import '../models/product.dart';
@@ -17,14 +18,18 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ApiService _apiService = ApiService();
   List<Category> categories = [];
   List<Product> popularProducts = [];
   bool _isLoadingCategories = true;
-  final bool _isLoadingProducts = true;
   int cartItemCount = 0;
   int _selectedIndex = 0;
+
+  // Banner carousel variables
+  PageController? _bannerController;
+  int _currentBannerIndex = 0;
+  Timer? _bannerTimer;
 
   final List<Map<String, dynamic>> popularItems = [
     {
@@ -55,6 +60,32 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _loadCategories();
     _loadCartCount();
+    _initializeBannerController();
+  }
+
+  void _initializeBannerController() {
+    _bannerController = PageController();
+    _startBannerAutoScroll();
+  }
+
+  void _startBannerAutoScroll() {
+    _bannerTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (_bannerController?.hasClients == true) {
+        _currentBannerIndex = (_currentBannerIndex + 1) % 3; // 3 banners total
+        _bannerController?.animateToPage(
+          _currentBannerIndex,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _bannerTimer?.cancel();
+    _bannerController?.dispose();
+    super.dispose();
   }
 
   @override
@@ -124,167 +155,55 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    // Set status bar immediately on build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      SystemChrome.setSystemUIOverlayStyle(
+        SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          systemNavigationBarColor: Colors.white,
+          systemNavigationBarIconBrightness: Brightness.dark,
+        ),
+      );
+    });
 
     return Scaffold(
       backgroundColor: theme.colorScheme.surface,
       drawer: const AppDrawer(),
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: theme.primaryColor,
-        automaticallyImplyLeading: true,
-        toolbarHeight: 70,
-        leading: Builder(
-          builder: (context) => Container(
-            margin: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(
-                color: Colors.white.withOpacity(0.3),
-                width: 1,
-              ),
-            ),
-            child: IconButton(
-              icon: const Icon(
-                Icons.menu,
-                color: Colors.white,
-                size: 22,
-              ),
-              onPressed: () => Scaffold.of(context).openDrawer(),
-            ),
-          ),
-        ),
-        systemOverlayStyle: SystemUiOverlayStyle(
-          statusBarColor: theme.colorScheme.surface,
-          statusBarIconBrightness: theme.brightness == Brightness.dark
-              ? Brightness.light
-              : Brightness.dark,
-        ),
-        title: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Good Morning! 👋',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white70,
-                        fontSize: 12,
-                      ),
-                    ),
-                    Text(
-                      'BakeHub',
-                      style: theme.textTheme.displaySmall?.copyWith(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                height: 40,
-                width: 40,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: IconButton(
-                  icon: const Icon(
-                    Icons.search,
-                    color: Colors.white,
-                    size: 20,
-                  ),
-                  onPressed: () async {
-                    final result =
-                        await Navigator.pushNamed(context, '/search');
-                    if (result == true || result == null) {
-                      setState(() {
-                        _selectedIndex = 0; // Reset to Home when returning
-                      });
-                    }
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                height: 40,
-                width: 40,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Stack(
-                  children: [
-                    IconButton(
-                      icon: const Icon(
-                        Icons.shopping_cart,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                      onPressed: _navigateToCart,
-                    ),
-                    if (cartItemCount > 0)
-                      Positioned(
-                        right: 0,
-                        top: 0,
-                        child: Container(
-                          padding: const EdgeInsets.all(2),
-                          decoration: BoxDecoration(
-                            color: Colors.red,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          constraints: const BoxConstraints(
-                            minWidth: 16,
-                            minHeight: 16,
-                          ),
-                          child: Text(
-                            '$cartItemCount',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      appBar: _buildAppBar(theme, screenWidth),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        padding: EdgeInsets.fromLTRB(
+            screenWidth *
+                0.02, // Reduced from 4% to 2% since banner now has its own margin
+            8,
+            screenWidth * 0.02, // Reduced from 4% to 2%
+            16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Banner Card
-            _buildBannerCard(theme),
-            const SizedBox(height: 24),
+            // Banner Carousel - Main, Bulk Order, AI Matching
+            _buildBannerCarousel(theme, screenWidth, screenHeight),
+            SizedBox(height: screenHeight * 0.03), // 3% of screen height
 
             // Categories Section
-            _buildSectionTitle('Categories', theme),
-            const SizedBox(height: 12),
-            _buildCategoriesGrid(theme),
-            const SizedBox(height: 24),
+            _buildSectionTitle('Categories', theme, screenWidth),
+            SizedBox(height: screenHeight * 0.015), // 1.5% of screen height
+            _buildCategoriesGrid(theme, screenWidth),
+            SizedBox(height: screenHeight * 0.03), // 3% of screen height
 
             // Popular Items Section
-            _buildSectionTitle('Popular Items', theme),
-            const SizedBox(height: 12),
-            _buildPopularItemsList(theme),
-            const SizedBox(height: 24),
+            _buildSectionTitle('Popular Items', theme, screenWidth),
+            SizedBox(height: screenHeight * 0.015), // 1.5% of screen height
+            _buildPopularItemsList(theme, screenWidth, screenHeight),
+            SizedBox(height: screenHeight * 0.03), // 3% of screen height
 
             // Special Offers Section
-            _buildSectionTitle('Special Offers', theme),
-            const SizedBox(height: 12),
-            _buildSpecialOffers(theme),
+            _buildSectionTitle('Special Offers', theme, screenWidth),
+            SizedBox(height: screenHeight * 0.015), // 1.5% of screen height
+            _buildSpecialOffers(theme, screenWidth, screenHeight),
           ],
         ),
       ),
@@ -292,76 +211,54 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildBannerCard(ThemeData theme) {
+  Widget _buildBannerCarousel(
+      ThemeData theme, double screenWidth, double screenHeight) {
+    final isSmallScreen = screenWidth < 360;
+    final isMediumScreen = screenWidth < 600;
+
     return Container(
-      height: 160,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            theme.primaryColor.withOpacity(0.8),
-            theme.primaryColor,
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: theme.primaryColor.withOpacity(0.3),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
+      height: isSmallScreen
+          ? 140
+          : isMediumScreen
+              ? 160
+              : 180,
+      margin: EdgeInsets.symmetric(
+          horizontal:
+              screenWidth * 0.01), // Reduced margin to make banners wider
       child: Stack(
         children: [
-          Positioned(
-            right: -20,
-            top: -20,
-            child: Container(
-              width: 100,
-              height: 100,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-            ),
+          PageView(
+            controller: _bannerController!,
+            onPageChanged: (index) {
+              setState(() {
+                _currentBannerIndex = index;
+              });
+            },
+            children: [
+              _buildMainBanner(theme, screenWidth, screenHeight),
+              _buildBulkOrderBanner(theme, screenWidth, screenHeight),
+              _buildAIMatchingBanner(theme, screenWidth, screenHeight),
+            ],
           ),
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  'Fresh Baked Daily!',
-                  style: theme.textTheme.displayMedium?.copyWith(
-                    color: Colors.white,
-                    fontSize: 24,
+          // Page indicator dots
+          Positioned(
+            bottom: 12,
+            right: 16,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(3, (index) {
+                return Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _currentBannerIndex == index
+                        ? Colors.white
+                        : Colors.white.withOpacity(0.5),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Get 20% off on your first order',
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    color: Colors.white70,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: () {
-                    // TODO: Implement order now
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: theme.primaryColor,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                  ),
-                  child: const Text('Order Now'),
-                ),
-              ],
+                );
+              }),
             ),
           ),
         ],
@@ -369,7 +266,431 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildSectionTitle(String title, ThemeData theme) {
+  Widget _buildMainBanner(
+      ThemeData theme, double screenWidth, double screenHeight) {
+    final isSmallScreen = screenWidth < 360;
+    final isMediumScreen = screenWidth < 600;
+
+    return Container(
+      height: isSmallScreen
+          ? 140
+          : isMediumScreen
+              ? 160
+              : 180,
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: theme.primaryColor.withOpacity(0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            // Animated gradient background
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    theme.primaryColor.withOpacity(0.9),
+                    theme.primaryColor,
+                    const Color(0xFF8B4513)
+                        .withOpacity(0.8), // Brown color for bakery theme
+                    const Color(0xFFD2691E), // Chocolate color
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  stops: const [0.0, 0.4, 0.7, 1.0],
+                ),
+              ),
+            ),
+
+            // Main content
+            Padding(
+              padding: EdgeInsets.all(isSmallScreen ? 12 : 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Welcome badge
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withOpacity(0.3)),
+                    ),
+                    child: Text(
+                      '🎉 Welcome to BakeHub',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isSmallScreen ? 10 : 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+
+                  SizedBox(height: isSmallScreen ? 4 : 6),
+
+                  // Main heading with gradient text effect
+                  ShaderMask(
+                    shaderCallback: (bounds) => LinearGradient(
+                      colors: [Colors.white, Colors.white.withOpacity(0.8)],
+                    ).createShader(bounds),
+                    child: Text(
+                      'Freshly Baked Every Day! 🍰',
+                      style: TextStyle(
+                        fontSize: isSmallScreen
+                            ? 16
+                            : isMediumScreen
+                                ? 18
+                                : 20,
+                        fontWeight: FontWeight.bold,
+                        height: 1.0,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+
+                  SizedBox(height: isSmallScreen ? 2 : 4),
+
+                  // App advertisement text
+                  Text(
+                    'Your favorite bakery items delivered fresh to your doorstep',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: isSmallScreen
+                          ? 11
+                          : isMediumScreen
+                              ? 12
+                              : 13,
+                      fontWeight: FontWeight.w400,
+                      height: 1.1,
+                    ),
+                  ),
+
+                  SizedBox(height: isSmallScreen ? 2 : 3),
+
+                  // Special offer container
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '🔥 25% OFF on first 3 orders',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isSmallScreen
+                            ? 10
+                            : isMediumScreen
+                                ? 11
+                                : 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBulkOrderBanner(
+      ThemeData theme, double screenWidth, double screenHeight) {
+    final isSmallScreen = screenWidth < 360;
+    final isMediumScreen = screenWidth < 600;
+    final bannerHeight = isSmallScreen
+        ? 175.0
+        : isMediumScreen
+            ? 195.0
+            : 215.0;
+
+    return Container(
+      height: bannerHeight,
+      margin: EdgeInsets.symmetric(horizontal: screenWidth * 0.01, vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF6B46C1)
+                .withOpacity(0.3), // Purple shadow matching bulk order theme
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            // Gradient background for bulk order - Matching Bulk Order Screen Theme
+            Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    Color(0xFF6B46C1), // Primary Purple from bulk order screen
+                    Color(
+                        0xFF9333EA), // Secondary Purple from bulk order screen
+                    Color(0xFF3B82F6), // Accent Blue from bulk order screen
+                    Color(0xFF8B5CF6), // Additional purple shade
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  stops: [0.0, 0.3, 0.7, 1.0],
+                ),
+              ),
+            ),
+
+            // Main content
+            Padding(
+              padding: EdgeInsets.all(isSmallScreen ? 12 : 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Bulk order badge
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withOpacity(0.3)),
+                    ),
+                    child: Text(
+                      '🏢 Business Orders',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isSmallScreen ? 10 : 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+
+                  SizedBox(height: isSmallScreen ? 4 : 6),
+
+                  // Main heading
+                  ShaderMask(
+                    shaderCallback: (bounds) => LinearGradient(
+                      colors: [Colors.white, Colors.white.withOpacity(0.8)],
+                    ).createShader(bounds),
+                    child: Text(
+                      'Bulk Orders Made Easy! 📦',
+                      style: TextStyle(
+                        fontSize: isSmallScreen
+                            ? 16
+                            : isMediumScreen
+                                ? 18
+                                : 20,
+                        fontWeight: FontWeight.bold,
+                        height: 1.0,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+
+                  SizedBox(height: isSmallScreen ? 2 : 4),
+
+                  // Description text
+                  Text(
+                    'Perfect for corporate events, parties and celebrations',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: isSmallScreen
+                          ? 11
+                          : isMediumScreen
+                              ? 12
+                              : 13,
+                      fontWeight: FontWeight.w400,
+                      height: 1.1,
+                    ),
+                  ),
+
+                  SizedBox(height: isSmallScreen ? 2 : 3),
+
+                  // Special offer container
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF9333EA)
+                          .withOpacity(0.3), // secondaryPurple accent
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '💼 Special rates for bulk orders',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isSmallScreen
+                            ? 11
+                            : isMediumScreen
+                                ? 12
+                                : 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAIMatchingBanner(
+      ThemeData theme, double screenWidth, double screenHeight) {
+    final isSmallScreen = screenWidth < 360;
+    final isMediumScreen = screenWidth < 600;
+    final bannerHeight = isSmallScreen
+        ? 160.0
+        : isMediumScreen
+            ? 180.0
+            : 200.0;
+    return Container(
+      height: bannerHeight,
+      margin: EdgeInsets.symmetric(horizontal: screenWidth * 0.01, vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF9C27B0)
+                .withOpacity(0.4), // AI theme purple shadow
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            // AI Matching Screen gradient
+            Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    Color(0xFF9C27B0), // Primary AI theme color
+                    Color(0xFFBA68C8), // Lighter purple
+                    Color(0xFFE1BEE7), // Even lighter purple
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  stops: [0.0, 0.6, 1.0],
+                ),
+              ),
+            ),
+
+            // Main content
+            Padding(
+              padding: EdgeInsets.all(isSmallScreen ? 12 : 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withOpacity(0.3)),
+                    ),
+                    child: Text(
+                      '🤖 AI Powered',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isSmallScreen ? 10 : 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  SizedBox(height: isSmallScreen ? 4 : 8),
+                  ShaderMask(
+                    shaderCallback: (bounds) => LinearGradient(
+                      colors: [Colors.white, Colors.white.withOpacity(0.8)],
+                    ).createShader(bounds),
+                    child: Text(
+                      'Smart Cake Matching! 🎯',
+                      style: TextStyle(
+                        fontSize: isSmallScreen
+                            ? 18
+                            : isMediumScreen
+                                ? 20
+                                : 22,
+                        fontWeight: FontWeight.bold,
+                        height: 1.0,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  SizedBox(height: isSmallScreen ? 2 : 4),
+
+                  // Description text
+                  Text(
+                    'AI finds the perfect cake for your taste and budget',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: isSmallScreen
+                          ? 11
+                          : isMediumScreen
+                              ? 12
+                              : 13,
+                      fontWeight: FontWeight.w400,
+                      height: 1.1,
+                    ),
+                  ),
+
+                  SizedBox(height: isSmallScreen ? 2 : 3),
+
+                  // Special offer container
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF9C27B0)
+                          .withOpacity(0.3), // AI theme purple accent
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '🧠 Try our intelligent recommendations',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isSmallScreen
+                            ? 10
+                            : isMediumScreen
+                                ? 11
+                                : 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String title, ThemeData theme, double screenWidth) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -379,7 +700,10 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         TextButton(
           onPressed: () {
-            // TODO: Implement see all
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const MenuScreen()),
+            );
           },
           child: Text(
             'See All',
@@ -390,22 +714,25 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildCategoriesGrid(ThemeData theme) {
+  Widget _buildCategoriesGrid(ThemeData theme, double screenWidth) {
+    final isSmallScreen = screenWidth < 360;
+    final isMediumScreen = screenWidth < 600;
+
     if (_isLoadingCategories) {
       return SizedBox(
-        height: 100,
+        height: isSmallScreen ? 90 : 100,
         child: ListView.builder(
           scrollDirection: Axis.horizontal,
           itemCount: 4, // Show 4 loading placeholders
           itemBuilder: (context, index) {
             return Container(
-              width: 80,
-              margin: const EdgeInsets.only(right: 16),
+              width: isSmallScreen ? 70 : 80,
+              margin: EdgeInsets.only(right: isSmallScreen ? 12 : 16),
               child: Column(
                 children: [
                   Container(
-                    height: 60,
-                    width: 60,
+                    height: isSmallScreen ? 50 : 60,
+                    width: isSmallScreen ? 50 : 60,
                     decoration: BoxDecoration(
                       color: Colors.grey.shade200,
                       borderRadius: BorderRadius.circular(16),
@@ -417,7 +744,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 8),
                   Container(
                     height: 12,
-                    width: 60,
+                    width: isSmallScreen ? 50 : 60,
                     decoration: BoxDecoration(
                       color: Colors.grey.shade200,
                       borderRadius: BorderRadius.circular(6),
@@ -433,7 +760,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (categories.isEmpty) {
       return SizedBox(
-        height: 100,
+        height: isSmallScreen ? 90 : 100,
         child: Center(
           child: Text(
             'No categories available',
@@ -445,92 +772,127 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
+    // For larger screens, show more categories in a grid
+    if (!isMediumScreen && categories.length > 4) {
+      return Column(
+        children: [
+          // First row - horizontal scroll
+          SizedBox(
+            height: isSmallScreen ? 90 : 100,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: categories.length > 6 ? 6 : categories.length,
+              itemBuilder: (context, index) =>
+                  _buildCategoryItem(categories[index], theme, isSmallScreen),
+            ),
+          ),
+          // Second row if more than 6 categories
+          if (categories.length > 6) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              height: isSmallScreen ? 90 : 100,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount:
+                    categories.length - 6 > 6 ? 6 : categories.length - 6,
+                itemBuilder: (context, index) => _buildCategoryItem(
+                    categories[index + 6], theme, isSmallScreen),
+              ),
+            ),
+          ],
+        ],
+      );
+    }
+
+    // Default horizontal scroll for small/medium screens
     return SizedBox(
-      height: 100,
+      height: isSmallScreen ? 90 : 100,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         itemCount: categories.length,
-        itemBuilder: (context, index) {
-          final category = categories[index];
-          return Container(
-            width: 80,
-            margin: const EdgeInsets.only(right: 16),
-            child: GestureDetector(
-              onTap: () async {
-                final result = await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) =>
-                        CategoryProductsScreen(category: category),
-                  ),
-                );
-                if (result == true || result == null) {
-                  setState(() {
-                    _selectedIndex = 0; // Reset to Home when returning
-                  });
-                }
-              },
-              child: Column(
-                children: [
-                  Container(
-                    height: 60,
-                    width: 60,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF0F0),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: theme.primaryColor.withOpacity(0.2),
-                        width: 1,
-                      ),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(15),
-                      child: category.image != null
-                          ? Image.network(
-                              category.image!,
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) {
-                                return _getCategoryIcon(category.name, theme);
-                              },
-                              loadingBuilder:
-                                  (context, child, loadingProgress) {
-                                if (loadingProgress == null) return child;
-                                return Center(
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    value: loadingProgress.expectedTotalBytes !=
-                                            null
-                                        ? loadingProgress
-                                                .cumulativeBytesLoaded /
-                                            loadingProgress.expectedTotalBytes!
-                                        : null,
-                                  ),
-                                );
-                              },
-                            )
-                          : _getCategoryIcon(category.name, theme),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    category.name,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.w500,
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+        itemBuilder: (context, index) =>
+            _buildCategoryItem(categories[index], theme, isSmallScreen),
       ),
     );
   }
 
-  Widget _getCategoryIcon(String categoryName, ThemeData theme) {
+  Widget _buildCategoryItem(
+      Category category, ThemeData theme, bool isSmallScreen) {
+    return Container(
+      width: isSmallScreen ? 70 : 80,
+      margin: EdgeInsets.only(right: isSmallScreen ? 12 : 16),
+      child: GestureDetector(
+        onTap: () async {
+          final result = await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => CategoryProductsScreen(category: category),
+            ),
+          );
+          if (result == true || result == null) {
+            setState(() {
+              _selectedIndex = 0; // Reset to Home when returning
+            });
+          }
+        },
+        child: Column(
+          children: [
+            Container(
+              height: isSmallScreen ? 50 : 60,
+              width: isSmallScreen ? 50 : 60,
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF0F0),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: theme.primaryColor.withOpacity(0.2),
+                  width: 1,
+                ),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(15),
+                child: category.image != null
+                    ? Image.network(
+                        category.image!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return _getCategoryIcon(
+                              category.name, theme, isSmallScreen);
+                        },
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              value: loadingProgress.expectedTotalBytes != null
+                                  ? loadingProgress.cumulativeBytesLoaded /
+                                      loadingProgress.expectedTotalBytes!
+                                  : null,
+                            ),
+                          );
+                        },
+                      )
+                    : _getCategoryIcon(category.name, theme, isSmallScreen),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              category.name,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w500,
+                fontSize: isSmallScreen ? 11 : 12,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _getCategoryIcon(
+      String categoryName, ThemeData theme, bool isSmallScreen) {
     IconData icon;
     switch (categoryName.toLowerCase()) {
       case 'cakes':
@@ -563,14 +925,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Icon(
       icon,
-      size: 30,
+      size: isSmallScreen ? 24 : 30,
       color: theme.primaryColor,
     );
   }
 
-  Widget _buildPopularItemsList(ThemeData theme) {
+  Widget _buildPopularItemsList(
+      ThemeData theme, double screenWidth, double screenHeight) {
     return SizedBox(
-      height: 300, // Increased height to prevent overflow
+      height: screenHeight < 600 ? 250 : 300, // Responsive height
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         itemCount: popularItems.length,
@@ -694,9 +1057,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildSpecialOffers(ThemeData theme) {
+  Widget _buildSpecialOffers(
+      ThemeData theme, double screenWidth, double screenHeight) {
+    final isSmallScreen = screenWidth < 360;
+
     return Container(
-      height: 120,
+      height: isSmallScreen ? 100 : 120,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
@@ -845,6 +1211,77 @@ class _HomeScreenState extends State<HomeScreen> {
           icon: Icon(Icons.menu_book),
           label: 'Menu',
         ),
+      ],
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar(ThemeData theme, double screenWidth) {
+    final isSmallScreen = screenWidth < 360;
+
+    return AppBar(
+      backgroundColor: theme.primaryColor,
+      elevation: 0,
+      title: Text(
+        'BakeHub',
+        style: TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+          fontSize: isSmallScreen ? 20 : 24,
+        ),
+      ),
+      leading: Builder(
+        builder: (context) => IconButton(
+          icon: const Icon(Icons.menu, color: Colors.white),
+          onPressed: () => Scaffold.of(context).openDrawer(),
+        ),
+      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.search, color: Colors.white),
+          onPressed: () {
+            // TODO: Implement search functionality
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Search feature coming soon!'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          },
+        ),
+        IconButton(
+          icon: Stack(
+            children: [
+              const Icon(Icons.shopping_cart, color: Colors.white),
+              if (cartItemCount > 0)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 16,
+                      minHeight: 16,
+                    ),
+                    child: Text(
+                      cartItemCount.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          onPressed: _navigateToCart,
+        ),
+        const SizedBox(width: 8),
       ],
     );
   }

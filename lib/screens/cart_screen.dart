@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import '../widgets/app_drawer.dart';
+import 'checkout_screen.dart';
 
 class CartScreen extends StatefulWidget {
   const CartScreen({super.key});
@@ -10,7 +12,7 @@ class CartScreen extends StatefulWidget {
   State<CartScreen> createState() => _CartScreenState();
 }
 
-class _CartScreenState extends State<CartScreen> {
+class _CartScreenState extends State<CartScreen> with WidgetsBindingObserver {
   List<CartItem> cartItems = [];
   bool isLoading = true;
 
@@ -20,7 +22,38 @@ class _CartScreenState extends State<CartScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    // Set status bar color to match app bar
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+      ));
+    });
+
     _loadCartItems();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      // Refresh cart when app comes back to foreground
+      _loadCartItems();
+    }
+  }
+
+  @override
+  void didUpdateWidget(CartScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _loadCartItems(); // Refresh cart when widget updates
   }
 
   Future<void> _loadCartItems() async {
@@ -125,6 +158,17 @@ class _CartScreenState extends State<CartScreen> {
     );
   }
 
+  Future<void> _clearCartAfterOrder() async {
+    print('_clearCartAfterOrder called');
+    print('Cart items before clear: ${cartItems.length}');
+    // Clear cart silently after successful order
+    setState(() => cartItems.clear());
+    print('Cart items after clear: ${cartItems.length}');
+    await _saveCartItems();
+    print('Cart items saved to SharedPreferences');
+    _showSuccessSnackBar('Order placed successfully! Cart cleared.');
+  }
+
   void _showErrorSnackBar(String message) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -148,9 +192,8 @@ class _CartScreenState extends State<CartScreen> {
   }
 
   double get subtotal => cartItems.fold(0, (sum, item) => sum + item.total);
-  double get tax => subtotal * 0.1; // 10% tax
   double get delivery => cartItems.isNotEmpty ? 50.0 : 0.0; // Rs. 50 delivery
-  double get grandTotal => subtotal + tax + delivery;
+  double get grandTotal => subtotal + delivery;
 
   @override
   Widget build(BuildContext context) {
@@ -454,7 +497,6 @@ class _CartScreenState extends State<CartScreen> {
           ),
           const SizedBox(height: 12),
           _buildSummaryRow('Subtotal', subtotal),
-          _buildSummaryRow('Tax (10%)', tax),
           _buildSummaryRow('Delivery', delivery),
           const Divider(height: 20),
           Row(
@@ -582,33 +624,42 @@ class _CartScreenState extends State<CartScreen> {
   }
 
   void _proceedToCheckout() {
-    // TODO: Implement checkout functionality
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Checkout'),
-        content: Text(
-          'Proceeding to checkout with ${cartItems.length} items.\n'
-          'Total: Rs. ${grandTotal.toStringAsFixed(0)}',
+    if (cartItems.isEmpty) {
+      _showErrorSnackBar('Your cart is empty');
+      return;
+    }
+
+    // Convert CartItem to checkout format
+    List<Map<String, dynamic>> checkoutItems = cartItems
+        .map((item) => {
+              'id': item.productId,
+              'name': item.name,
+              'price': item.price,
+              'quantity': item.quantity,
+            })
+        .toList();
+
+    // Navigate to checkout screen
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CheckoutScreen(
+          cartItems: checkoutItems,
+          totalAmount: subtotal,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              // TODO: Navigate to checkout screen
-              _showSuccessSnackBar('Checkout functionality coming soon!');
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: coralColor),
-            child:
-                const Text('Continue', style: TextStyle(color: Colors.white)),
-          ),
-        ],
       ),
-    );
+    ).then((result) {
+      // If checkout is successful, clear cart
+      print('Checkout result: $result');
+      if (result == true) {
+        print('Clearing cart after successful order');
+        _clearCartAfterOrder();
+      } else {
+        print('Cart not cleared, result was: $result');
+      }
+      // Always refresh cart items when returning from checkout
+      _loadCartItems();
+    });
   }
 }
 

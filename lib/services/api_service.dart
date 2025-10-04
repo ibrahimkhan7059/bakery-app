@@ -10,7 +10,7 @@ class ApiService {
   // For Android Emulator, use 10.0.2.2 to access your host machine's localhost
   // For physical device or iOS simulator, use your computer's local network IP (e.g., http://192.168.1.X:8000)
   final String _baseUrl =
-      'http://192.168.100.81:8000/api'; // Updated IP address
+      'http://192.168.100.4:8080/api'; // Force update IP address
 
   // Common headers
   final Map<String, String> _headers = {
@@ -21,11 +21,18 @@ class ApiService {
   // Get authorization headers with token
   Future<Map<String, String>> _getAuthHeaders() async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('authToken');
+    // Try both possible token keys for compatibility
+    final token = prefs.getString('authToken') ?? prefs.getString('auth_token');
+
+    print(
+        'Token retrieved: ${token != null ? 'Present (${token.length} chars)' : 'Not found'}');
 
     final headers = Map<String, String>.from(_headers);
-    if (token != null) {
+    if (token != null && token.isNotEmpty) {
       headers['Authorization'] = 'Bearer $token';
+      print('Authorization header added');
+    } else {
+      print('No valid token found for authentication');
     }
     return headers;
   }
@@ -265,13 +272,34 @@ class ApiService {
     }
   }
 
+  // Test server connectivity
+  Future<bool> testServerConnection() async {
+    try {
+      print('Testing server connection to: $_baseUrl/v1/bulk-orders');
+      final response = await http.get(
+        Uri.parse('$_baseUrl/v1/bulk-orders'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 10));
+
+      print('Server test response: ${response.statusCode}');
+      return response.statusCode == 200 ||
+          response.statusCode == 401; // Either success or auth required is good
+    } catch (e) {
+      print('Server connection test failed: $e');
+      return false;
+    }
+  }
+
   // Bulk Orders
   Future<List<BulkOrder>> getBulkOrders() async {
     try {
-      final response = await http.get(
-        Uri.parse('$_baseUrl/v1/bulk-orders'),
-        headers: await _getAuthHeaders(),
-      );
+      print('Attempting to fetch bulk orders from: $_baseUrl/v1/bulk-orders');
+      final response = await http
+          .get(
+            Uri.parse('$_baseUrl/v1/bulk-orders'),
+            headers: await _getAuthHeaders(),
+          )
+          .timeout(const Duration(seconds: 30)); // Increased timeout
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
@@ -306,11 +334,14 @@ class ApiService {
       print('Total Amount Type: ${orderJson['total_amount'].runtimeType}');
       print('==============================');
 
-      final response = await http.post(
-        Uri.parse('$_baseUrl/v1/bulk-orders'),
-        headers: headers,
-        body: jsonEncode(orderJson),
-      );
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/v1/bulk-orders'),
+            headers: headers,
+            body: jsonEncode(orderJson),
+          )
+          .timeout(const Duration(
+              seconds: 30)); // Longer timeout for create operations
 
       print('Response Status: ${response.statusCode}');
       print('Response Body: ${response.body}');
@@ -582,6 +613,327 @@ class ApiService {
             'Could not connect to the server. Please check if the server is running and your internet connection.');
       }
       throw Exception(e.toString());
+    }
+  }
+
+  // Get User Profile
+  Future<Map<String, dynamic>> getUserProfile() async {
+    try {
+      final headers = await _getAuthHeaders();
+      final response = await http.get(
+        Uri.parse('$_baseUrl/v1/profile'),
+        headers: headers,
+      );
+
+      print('Profile response status: ${response.statusCode}');
+      print('Profile response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      } else {
+        throw Exception(
+            'Failed to load profile: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Profile fetch error: $e');
+      if (e.toString().contains('SocketException') ||
+          e.toString().contains('Connection refused')) {
+        throw Exception(
+            'Could not connect to the server. Please check if the server is running and your internet connection.');
+      }
+      throw Exception('Failed to fetch profile. ${e.toString()}');
+    }
+  }
+
+  // Update User Profile
+  Future<Map<String, dynamic>> updateUserProfile({
+    required String name,
+    required String email,
+    required String phone,
+    required String address,
+  }) async {
+    try {
+      final headers = await _getAuthHeaders();
+
+      final body = jsonEncode({
+        'name': name,
+        'email': email,
+        'phone': phone,
+        'address': address,
+      });
+
+      print('Updating profile with data: $body');
+
+      final response = await http.put(
+        Uri.parse('$_baseUrl/v1/profile'),
+        headers: headers,
+        body: body,
+      );
+
+      print('Profile update response status: ${response.statusCode}');
+      print('Profile update response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+
+        // Update local storage with new data
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('user_name', name);
+        await prefs.setString('user_email', email);
+        await prefs.setString('user_phone', phone);
+        await prefs.setString('user_address', address);
+
+        return responseData;
+      } else {
+        throw Exception(
+            'Failed to update profile: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Profile update error: $e');
+      if (e.toString().contains('SocketException') ||
+          e.toString().contains('Connection refused')) {
+        throw Exception(
+            'Could not connect to the server. Please check if the server is running and your internet connection.');
+      }
+      throw Exception('Failed to update profile. ${e.toString()}');
+    }
+  }
+
+  // Change Password
+  Future<Map<String, dynamic>> changePassword({
+    required String currentPassword,
+    required String newPassword,
+    required String confirmPassword,
+  }) async {
+    try {
+      final headers = await _getAuthHeaders();
+
+      final body = jsonEncode({
+        'current_password': currentPassword,
+        'password': newPassword,
+        'password_confirmation': confirmPassword,
+      });
+
+      print('Changing password...');
+
+      final response = await http.put(
+        Uri.parse('$_baseUrl/v1/profile/change-password'),
+        headers: headers,
+        body: body,
+      );
+
+      print('Password change response status: ${response.statusCode}');
+      print('Password change response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+        return responseData;
+      } else if (response.statusCode == 422) {
+        final errorData = jsonDecode(response.body);
+        if (errorData['errors'] != null) {
+          // Handle validation errors
+          final errors = errorData['errors'] as Map<String, dynamic>;
+          final firstError = errors.values.first;
+          if (firstError is List && firstError.isNotEmpty) {
+            throw Exception(firstError.first);
+          }
+        }
+        throw Exception(errorData['message'] ?? 'Validation failed');
+      } else {
+        final errorData = jsonDecode(response.body);
+        throw Exception(errorData['message'] ?? 'Failed to change password');
+      }
+    } catch (e) {
+      print('Password change error: $e');
+      if (e.toString().contains('SocketException') ||
+          e.toString().contains('Connection refused')) {
+        throw Exception(
+            'Could not connect to the server. Please check if the server is running and your internet connection.');
+      }
+      throw Exception('Failed to change password. ${e.toString()}');
+    }
+  }
+
+  // Fetch custom cake orders for the logged-in user (not bulk orders)
+  Future<List<Map<String, dynamic>>> getMyCakeOrders() async {
+    try {
+      final headers = await _getAuthHeaders();
+      final response = await http.get(
+        Uri.parse('$_baseUrl/v1/cake-orders'), // Adjust endpoint as needed
+        headers: headers,
+      );
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        // Only return custom cake orders, not bulk
+        return List<Map<String, dynamic>>.from(data);
+      } else if (response.statusCode == 401) {
+        throw Exception('Please login to view your orders');
+      } else {
+        throw Exception(
+            'Failed to fetch orders: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('My orders fetch error: $e');
+      throw Exception('Failed to fetch orders. ${e.toString()}');
+    }
+  }
+
+  // Fetch simple (regular) orders for the logged-in user (not custom or bulk)
+  Future<List<Map<String, dynamic>>> getMySimpleOrders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // Try both token keys for compatibility
+      String? token =
+          prefs.getString('authToken') ?? prefs.getString('auth_token');
+      print(
+          'Token retrieved: ${token != null ? 'Present (${token.length} chars)' : 'Not found'}');
+
+      if (token == null) {
+        throw Exception('No authentication token found. Please login again.');
+      }
+
+      print('Fetching orders with token...');
+      final response = await http.get(
+        Uri.parse('$_baseUrl/v1/orders'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      print('Orders API response status: ${response.statusCode}');
+      print('Orders API response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final jsonResponse = json.decode(response.body);
+        if (jsonResponse['data'] is List) {
+          return List<Map<String, dynamic>>.from(jsonResponse['data']);
+        } else {
+          throw Exception('Invalid response format: expected data array');
+        }
+      } else if (response.statusCode == 401) {
+        // Clear invalid token and throw authentication error
+        print('Token invalid (401), clearing stored tokens...');
+        await prefs.remove('authToken');
+        await prefs.remove('auth_token');
+        await prefs.remove('user');
+        throw Exception('Session expired. Please login again.');
+      } else {
+        throw Exception(
+            'Failed to load orders: ${response.statusCode} - ${response.body}');
+      }
+    } catch (e) {
+      print('Error in getMySimpleOrders: $e');
+      rethrow;
+    }
+  }
+
+  // Create Regular Order (for checkout)
+  Future<Map<String, dynamic>> createOrder(
+      Map<String, dynamic> orderData) async {
+    try {
+      final headers = await _getAuthHeaders();
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl/v1/orders'),
+        headers: headers,
+        body: json.encode(orderData),
+      );
+
+      print('Create order response status: ${response.statusCode}');
+      print('Create order response body: ${response.body}');
+
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        return {
+          'success': true,
+          'order_id': responseData['order']['id'],
+          'message': 'Order created successfully',
+          ...responseData,
+        };
+      } else {
+        final errorData = json.decode(response.body);
+        return {
+          'success': false,
+          'message': errorData['message'] ?? 'Failed to create order',
+        };
+      }
+    } catch (e) {
+      print('Create order error: $e');
+      return {
+        'success': false,
+        'message': 'Network error: $e',
+      };
+    }
+  }
+
+  // Payment Methods
+  Future<Map<String, dynamic>> initiatePayment({
+    required double amount,
+    required String customerName,
+    required String customerEmail,
+    required String customerMobile,
+    required String orderId,
+    required String description,
+  }) async {
+    try {
+      final headers = await _getAuthHeaders();
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl/payment/initiate'),
+        headers: headers,
+        body: json.encode({
+          'amount': amount,
+          'customer_name': customerName,
+          'customer_email': customerEmail,
+          'customer_mobile': customerMobile,
+          'order_id': orderId,
+          'description': description,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        final errorData = json.decode(response.body);
+        return {
+          'success': false,
+          'message': errorData['message'] ?? 'Payment initiation failed',
+        };
+      }
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Network error: $e',
+      };
+    }
+  }
+
+  Future<Map<String, dynamic>> checkPaymentStatus({
+    required String basketId,
+  }) async {
+    try {
+      final headers = await _getAuthHeaders();
+
+      final response = await http.get(
+        Uri.parse('$_baseUrl/payment/status?basket_id=$basketId'),
+        headers: headers,
+      );
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        return {
+          'success': false,
+          'message': 'Failed to check payment status',
+        };
+      }
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Network error: $e',
+      };
     }
   }
 }

@@ -9,6 +9,7 @@ import '../models/product.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import 'payment_screen.dart';
 
 const Color primaryPurple = Color(0xFF6B46C1);
 const Color secondaryPurple = Color(0xFF9333EA);
@@ -49,17 +50,27 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
     });
   }
 
-  Future<void> _loadBulkOrders() async {
+  Future<void> _loadBulkOrders({bool isManualRefresh = false}) async {
     try {
+      // Test server connection first
+      print('Testing server connection...');
+      final connectionTest = await _apiService.testServerConnection();
+      print('Server connection test result: $connectionTest');
+
+      if (!connectionTest) {
+        print('Server connection test failed - trying anyway...');
+      }
+
       // Get all bulk orders from API
       final allOrders = await _apiService.getBulkOrders();
       print('Total orders fetched: ${allOrders.length}'); // Debug log
 
-      // Debug: Print each order's details
+      // Debug: Print each order's details with ownership check
       for (int i = 0; i < allOrders.length; i++) {
         final order = allOrders[i];
+        final belongsToUser = await _isCurrentUserOrder(order);
         print(
-            'Order $i: ID=${order.id}, CustomerName=${order.customerName}, UserId=${order.userId}');
+            'Order $i: ID=${order.id}, CustomerName=${order.customerName}, UserId=${order.userId}, BelongsToCurrentUser=$belongsToUser');
       }
 
       // Debug: Check all available keys in SharedPreferences
@@ -79,58 +90,78 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
 
       List<BulkOrder> userOrders = [];
 
+      // Get user identification data
+      final directUserId = prefs.getInt('user_id');
+      final token = prefs.getString('authToken');
+      final userName = prefs.getString('user_name');
+
+      print('User identification data:');
+      print('- AuthService user: $currentUser');
+      print('- SharedPrefs user_id: $directUserId');
+      print('- AuthToken: ${token != null ? "Present" : "Missing"}');
+      print('- User name: $userName');
+
+      // Try multiple filtering strategies to ensure we catch ONLY the user's orders
       if (currentUser != null && currentUser['id'] != null) {
-        // Filter orders to show only current user's orders
         final currentUserId = currentUser['id'];
         userOrders =
             allOrders.where((order) => order.userId == currentUserId).toList();
         print(
-            'Current user ID: $currentUserId, User orders: ${userOrders.length}'); // Debug log
-      } else {
-        // Try alternative approach - get user ID directly from SharedPreferences
-        final directUserId = prefs.getInt('user_id');
-        final token = prefs.getString('authToken');
-        final userName = prefs.getString('user_name');
+            'Strategy 1 (AuthService ID): Found ${userOrders.length} orders for user ID $currentUserId');
+      }
 
-        if (directUserId != null) {
-          // For now, also filter by customer name as a fallback since user_id might not be properly set in backend
-          final userName = prefs.getString('user_name') ?? '';
-          userOrders = allOrders
-              .where((order) =>
-                  order.userId == directUserId &&
-                  (userName.isEmpty ||
-                      order.customerName
-                          .toLowerCase()
-                          .contains(userName.toLowerCase())))
-              .toList();
-          print(
-              'Using direct user_id: $directUserId with name filter: $userName, User orders: ${userOrders.length}');
-        } else if (token != null && token.isNotEmpty && userName != null) {
-          // User is logged in but no user_id saved, use default and save it
-          final defaultUserId = 1; // Default for logged in users
-          // Also filter by customer name as a fallback since user_id might not be properly set in backend
-          userOrders = allOrders
-              .where((order) =>
-                  order.userId == defaultUserId &&
-                  order.customerName
-                      .toLowerCase()
-                      .contains(userName.toLowerCase()))
-              .toList();
-          print(
-              'User is logged in ($userName) but no user_id found, using default ID $defaultUserId with name filter, showing ${userOrders.length} orders');
+      // If no orders found with AuthService, try SharedPrefs user_id (STRICT matching)
+      if (userOrders.isEmpty && directUserId != null) {
+        userOrders =
+            allOrders.where((order) => order.userId == directUserId).toList();
+        print(
+            'Strategy 2 (SharedPrefs ID): Found ${userOrders.length} orders for user ID $directUserId');
+      }
 
-          // Save the default user ID for future use
+      // REMOVE name-based filtering as it can show other users' orders with similar names
+      // Only use user ID based filtering for security
+
+      // If still no orders and we have a valid user session, try default user ID (1) but ONLY with exact name match
+      if (userOrders.isEmpty &&
+          token != null &&
+          token.isNotEmpty &&
+          userName != null &&
+          userName.isNotEmpty) {
+        const defaultUserId = 1;
+        // Very strict name matching - must be exact match (case insensitive)
+        userOrders = allOrders
+            .where((order) =>
+                order.userId == defaultUserId &&
+                order.customerName.toLowerCase() == userName.toLowerCase())
+            .toList();
+        print(
+            'Strategy 3 (Default ID + Exact Name): Found ${userOrders.length} orders for default ID with exact name match');
+
+        // Save the default user ID for future use if not already saved
+        if (directUserId == null) {
           await prefs.setInt('user_id', defaultUserId);
-        } else {
-          userOrders = [];
-          print('No user logged in, showing empty list');
+          print('Saved default user_id: $defaultUserId');
         }
+      }
+
+      // SECURITY: Never show all orders for debugging in production
+      if (userOrders.isEmpty && allOrders.isNotEmpty) {
+        print('No orders found for current user');
+        print(
+            'Current user data: ID=${currentUser?['id']}, Name=$userName, StoredID=$directUserId');
+        print(
+            'Available order user IDs: ${allOrders.map((o) => o.userId).toSet()}');
+        print(
+            'Available customer names: ${allOrders.map((o) => o.customerName).toSet()}');
+        // Keep userOrders empty for security - don't show other users' orders
       }
 
       setState(() {
         _bulkOrders = userOrders;
         _isLoading = false;
       });
+      print(
+          'Successfully updated state with ${userOrders.length} orders'); // Debug log
     } catch (e) {
       print('Error loading bulk orders: $e'); // Debug log
       setState(() {
@@ -144,6 +175,33 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  // Helper method to check if an order belongs to current user
+  Future<bool> _isCurrentUserOrder(BulkOrder order) async {
+    final prefs = await SharedPreferences.getInstance();
+    final AuthService authService = AuthService();
+    final currentUser = await authService.getCurrentUser();
+    final directUserId = prefs.getInt('user_id');
+    final userName = prefs.getString('user_name');
+
+    // Primary check: AuthService user ID
+    if (currentUser != null && currentUser['id'] != null) {
+      return order.userId == currentUser['id'];
+    }
+
+    // Secondary check: SharedPreferences user ID
+    if (directUserId != null) {
+      return order.userId == directUserId;
+    }
+
+    // Tertiary check: Exact name match with default user ID
+    if (userName != null && userName.isNotEmpty) {
+      return order.userId == 1 &&
+          order.customerName.toLowerCase() == userName.toLowerCase();
+    }
+
+    return false; // Default: not user's order
   }
 
   // Auto refresh timer methods
@@ -253,7 +311,12 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
 
   Widget _buildTabBar() {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      margin: EdgeInsets.symmetric(
+        horizontal: MediaQuery.of(context).size.width > 600
+            ? 20
+            : 16, // Responsive margin
+        vertical: 10,
+      ),
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.2),
         borderRadius: BorderRadius.circular(25),
@@ -273,22 +336,38 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
         ),
         labelColor: primaryPurple,
         unselectedLabelColor: Colors.white,
-        labelStyle: const TextStyle(
+        labelStyle: TextStyle(
           fontWeight: FontWeight.bold,
-          fontSize: 16,
+          fontSize: MediaQuery.of(context).size.width > 600
+              ? 16
+              : 14, // Responsive font size
         ),
-        unselectedLabelStyle: const TextStyle(
+        unselectedLabelStyle: TextStyle(
           fontWeight: FontWeight.w500,
-          fontSize: 16,
+          fontSize: MediaQuery.of(context).size.width > 600
+              ? 16
+              : 14, // Responsive font size
         ),
-        tabs: const [
+        tabs: [
           Tab(
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.add_shopping_cart, size: 20),
-                SizedBox(width: 8),
-                Text('Create Order'),
+                Icon(Icons.add_shopping_cart,
+                    size: MediaQuery.of(context).size.width > 600
+                        ? 20
+                        : 18), // Responsive icon size
+                SizedBox(
+                    width: MediaQuery.of(context).size.width > 600
+                        ? 8
+                        : 6), // Responsive spacing
+                Flexible(
+                  // Added Flexible to prevent overflow
+                  child: Text(
+                    'Create Order',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             ),
           ),
@@ -296,9 +375,21 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.history, size: 20),
-                SizedBox(width: 8),
-                Text('Order History'),
+                Icon(Icons.history,
+                    size: MediaQuery.of(context).size.width > 600
+                        ? 20
+                        : 18), // Responsive icon size
+                SizedBox(
+                    width: MediaQuery.of(context).size.width > 600
+                        ? 8
+                        : 6), // Responsive spacing
+                Flexible(
+                  // Added Flexible to prevent overflow
+                  child: Text(
+                    'Order History',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             ),
           ),
@@ -395,16 +486,23 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
 
   Widget _buildCreateOrderTab() {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.symmetric(
+        horizontal: MediaQuery.of(context).size.width > 600
+            ? 20
+            : 16, // Responsive padding
+        vertical: 16,
+      ),
       child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildWelcomeCard(),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20), // Reduced spacing
             _buildQuickStatsCard(),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20), // Reduced spacing
             _buildCreateOrderForm(),
+            const SizedBox(
+                height: 20), // Added bottom padding for better scrolling
           ],
         ),
       ),
@@ -413,7 +511,9 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
 
   Widget _buildWelcomeCard() {
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+          ? 24
+          : 16), // Responsive padding
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -445,7 +545,10 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
               size: 32,
             ),
           ),
-          const SizedBox(width: 20),
+          SizedBox(
+              width: MediaQuery.of(context).size.width > 600
+                  ? 20
+                  : 12), // Responsive spacing
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -565,7 +668,9 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
 
   Widget _buildCreateOrderForm() {
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+          ? 24
+          : 16), // Responsive padding
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
@@ -596,18 +701,30 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
                   size: 20,
                 ),
               ),
-              const SizedBox(width: 12),
-              const Text(
-                'Create New Bulk Order',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: darkPurple,
+              SizedBox(
+                  width: MediaQuery.of(context).size.width > 600
+                      ? 12
+                      : 8), // Responsive spacing
+              Expanded(
+                // Added Expanded to prevent overflow
+                child: Text(
+                  'Create New Bulk Order',
+                  style: TextStyle(
+                    fontSize: MediaQuery.of(context).size.width > 600
+                        ? 20
+                        : 18, // Responsive font size
+                    fontWeight: FontWeight.bold,
+                    color: darkPurple,
+                  ),
+                  overflow: TextOverflow.ellipsis, // Handle text overflow
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 24),
+          SizedBox(
+              height: MediaQuery.of(context).size.width > 600
+                  ? 24
+                  : 16), // Responsive spacing
           const CreateBulkOrderForm(),
         ],
       ),
@@ -617,12 +734,16 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
   Widget _buildOrderHistoryTab() {
     if (_isLoading) {
       return Container(
-        padding: const EdgeInsets.all(40),
+        padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+            ? 40
+            : 24), // Responsive padding
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+                  ? 20
+                  : 16), // Responsive padding
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [
@@ -636,14 +757,20 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
                 valueColor: AlwaysStoppedAnimation<Color>(primaryPurple),
               ),
             ),
-            const SizedBox(height: 20),
-            const Text(
+            SizedBox(
+                height: MediaQuery.of(context).size.width > 600
+                    ? 20
+                    : 16), // Responsive spacing
+            Text(
               'Loading your orders...',
               style: TextStyle(
                 color: darkPurple,
-                fontSize: 16,
+                fontSize: MediaQuery.of(context).size.width > 600
+                    ? 16
+                    : 14, // Responsive font size
                 fontWeight: FontWeight.w500,
               ),
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
@@ -652,12 +779,16 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
 
     if (_bulkOrders.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(40),
+        padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+            ? 40
+            : 24), // Responsive padding
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              padding: const EdgeInsets.all(24),
+              padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+                  ? 24
+                  : 20), // Responsive padding
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [
@@ -669,67 +800,129 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
               ),
               child: Icon(
                 Icons.inventory_2_outlined,
-                size: 80,
+                size: MediaQuery.of(context).size.width > 600
+                    ? 80
+                    : 64, // Responsive icon size
                 color: Colors.grey.shade400,
               ),
             ),
-            const SizedBox(height: 24),
-            const Text(
+            SizedBox(
+                height: MediaQuery.of(context).size.width > 600
+                    ? 24
+                    : 20), // Responsive spacing
+            Text(
               'No bulk orders found',
               style: TextStyle(
-                fontSize: 24,
+                fontSize: MediaQuery.of(context).size.width > 600
+                    ? 24
+                    : 20, // Responsive font size
                 fontWeight: FontWeight.bold,
                 color: darkPurple,
               ),
+              textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
             Text(
-              'Your bulk orders will appear here once you create them',
+              'Your bulk orders will appear here once you create them.\nOnly your orders are shown for security.',
               style: TextStyle(
                 color: Colors.grey.shade600,
-                fontSize: 16,
+                fontSize: MediaQuery.of(context).size.width > 600
+                    ? 16
+                    : 14, // Responsive font size
               ),
               textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: () {
-                    _loadBulkOrders(); // Refresh orders
-                  },
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Refresh'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey.shade600,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 24, vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(25),
-                    ),
+            SizedBox(
+                height: MediaQuery.of(context).size.width > 600
+                    ? 24
+                    : 20), // Responsive spacing
+            // Make buttons responsive for smaller screens
+            MediaQuery.of(context).size.width > 600
+                ? Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          _loadBulkOrders(
+                              isManualRefresh: true); // Refresh orders
+                        },
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Refresh'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey.shade600,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 24, vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(25),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          _tabController.animateTo(0);
+                        },
+                        icon: const Icon(Icons.add),
+                        label: const Text('Create Order'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: primaryPurple,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 24, vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(25),
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : Column(
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            _tabController.animateTo(0);
+                          },
+                          icon: const Icon(Icons.add),
+                          label: const Text('Create Order'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryPurple,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(25),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            _loadBulkOrders(
+                                isManualRefresh: true); // Refresh orders
+                          },
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Refresh'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.grey.shade600,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(25),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(width: 16),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    _tabController.animateTo(0);
-                  },
-                  icon: const Icon(Icons.add),
-                  label: const Text('Create Order'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: primaryPurple,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 24, vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(25),
-                    ),
-                  ),
-                ),
-              ],
-            ),
           ],
         ),
       );
@@ -737,9 +930,11 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
 
     return RefreshIndicator(
       color: primaryPurple,
-      onRefresh: _loadBulkOrders,
+      onRefresh: () => _loadBulkOrders(isManualRefresh: true),
       child: ListView.builder(
-        padding: const EdgeInsets.all(20),
+        padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+            ? 20
+            : 16), // Responsive padding
         itemCount: _bulkOrders.length,
         itemBuilder: (context, index) {
           final order = _bulkOrders[index];
@@ -793,7 +988,10 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
+      margin: EdgeInsets.only(
+          bottom: MediaQuery.of(context).size.width > 600
+              ? 16
+              : 12), // Responsive margin
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
@@ -813,14 +1011,19 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
         onTap: () => _viewOrderDetails(order),
         borderRadius: BorderRadius.circular(20),
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+              ? 20
+              : 16), // Responsive padding
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(12),
+                    padding: EdgeInsets.all(
+                        MediaQuery.of(context).size.width > 600
+                            ? 12
+                            : 10), // Responsive padding
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         colors: [
@@ -833,36 +1036,58 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
                     child: Icon(
                       Icons.receipt_long,
                       color: primaryPurple,
-                      size: 24,
+                      size: MediaQuery.of(context).size.width > 600
+                          ? 24
+                          : 20, // Responsive icon size
                     ),
                   ),
-                  const SizedBox(width: 16),
+                  SizedBox(
+                      width: MediaQuery.of(context).size.width > 600
+                          ? 16
+                          : 12), // Responsive spacing
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           order.customerName,
-                          style: const TextStyle(
-                            fontSize: 18,
+                          style: TextStyle(
+                            fontSize: MediaQuery.of(context).size.width > 600
+                                ? 18
+                                : 16, // Responsive font size
                             fontWeight: FontWeight.bold,
                             color: darkPurple,
                           ),
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(height: 4),
+                        SizedBox(
+                            height: MediaQuery.of(context).size.width > 600
+                                ? 4
+                                : 2), // Responsive spacing
                         Text(
                           'Order #${order.id}',
                           style: TextStyle(
                             color: Colors.grey.shade600,
-                            fontSize: 14,
+                            fontSize: MediaQuery.of(context).size.width > 600
+                                ? 14
+                                : 12, // Responsive font size
                           ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
                   ),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.of(context).size.width *
+                          0.3, // Responsive width limit
+                    ),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: MediaQuery.of(context).size.width > 600
+                          ? 12
+                          : 10, // Responsive padding
+                      vertical: MediaQuery.of(context).size.width > 600 ? 8 : 6,
+                    ),
                     decoration: BoxDecoration(
                       color: statusColor.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20),
@@ -874,14 +1099,26 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(statusIcon, size: 16, color: statusColor),
-                        const SizedBox(width: 6),
-                        Text(
-                          statusText,
-                          style: TextStyle(
-                            color: statusColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
+                        Icon(statusIcon,
+                            size: MediaQuery.of(context).size.width > 600
+                                ? 16
+                                : 14,
+                            color: statusColor), // Responsive icon size
+                        SizedBox(
+                            width: MediaQuery.of(context).size.width > 600
+                                ? 6
+                                : 4), // Responsive spacing
+                        Expanded(
+                          child: Text(
+                            statusText,
+                            style: TextStyle(
+                              color: statusColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: MediaQuery.of(context).size.width > 600
+                                  ? 12
+                                  : 10, // Responsive font size
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -889,58 +1126,106 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
+              SizedBox(
+                  height: MediaQuery.of(context).size.width > 600
+                      ? 20
+                      : 16), // Responsive spacing
               Container(
-                padding: const EdgeInsets.all(16),
+                padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+                    ? 16
+                    : 12), // Responsive padding
                 decoration: BoxDecoration(
                   color: lightPurple,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: _buildOrderDetail(
-                        icon: Icons.shopping_bag_outlined,
-                        label: 'Quantity',
-                        value:
-                            '${order.items.fold(0, (sum, item) => sum + item.quantity)} items',
-                        color: accentBlue,
+                child: MediaQuery.of(context).size.width > 600
+                    ? Row(
+                        children: [
+                          Expanded(
+                            child: _buildOrderDetail(
+                              icon: Icons.shopping_bag_outlined,
+                              label: 'Quantity',
+                              value:
+                                  '${order.items.fold(0, (sum, item) => sum + item.quantity)} items',
+                              color: accentBlue,
+                            ),
+                          ),
+                          Container(
+                            width: 1,
+                            height: 40,
+                            color: Colors.grey.shade300,
+                          ),
+                          Expanded(
+                            child: _buildOrderDetail(
+                              icon: Icons.attach_money,
+                              label: 'Total',
+                              value:
+                                  'Rs. ${order.totalAmount.toStringAsFixed(0)}',
+                              color: accentPink,
+                            ),
+                          ),
+                          Container(
+                            width: 1,
+                            height: 40,
+                            color: Colors.grey.shade300,
+                          ),
+                          Expanded(
+                            child: _buildOrderDetail(
+                              icon: Icons.calendar_today,
+                              label: 'Date',
+                              value: _formatDate(order.createdAt),
+                              color: secondaryPurple,
+                            ),
+                          ),
+                        ],
+                      )
+                    : Column(
+                        // Stack vertically for smaller screens
+                        children: [
+                          _buildOrderDetail(
+                            icon: Icons.shopping_bag_outlined,
+                            label: 'Quantity',
+                            value:
+                                '${order.items.fold(0, (sum, item) => sum + item.quantity)} items',
+                            color: accentBlue,
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _buildOrderDetail(
+                                  icon: Icons.attach_money,
+                                  label: 'Total',
+                                  value:
+                                      'Rs. ${order.totalAmount.toStringAsFixed(0)}',
+                                  color: accentPink,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: _buildOrderDetail(
+                                  icon: Icons.calendar_today,
+                                  label: 'Date',
+                                  value: _formatDate(order.createdAt),
+                                  color: secondaryPurple,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
-                    ),
-                    Container(
-                      width: 1,
-                      height: 40,
-                      color: Colors.grey.shade300,
-                    ),
-                    Expanded(
-                      child: _buildOrderDetail(
-                        icon: Icons.attach_money,
-                        label: 'Total',
-                        value: 'Rs. ${order.totalAmount.toStringAsFixed(0)}',
-                        color: accentPink,
-                      ),
-                    ),
-                    Container(
-                      width: 1,
-                      height: 40,
-                      color: Colors.grey.shade300,
-                    ),
-                    Expanded(
-                      child: _buildOrderDetail(
-                        icon: Icons.calendar_today,
-                        label: 'Date',
-                        value: _formatDate(order.createdAt),
-                        color: secondaryPurple,
-                      ),
-                    ),
-                  ],
-                ),
               ),
               if (order.specialInstructions != null &&
                   order.specialInstructions!.isNotEmpty) ...[
-                const SizedBox(height: 16),
+                SizedBox(
+                    height: MediaQuery.of(context).size.width > 600
+                        ? 16
+                        : 12), // Responsive spacing
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: EdgeInsets.all(
+                      MediaQuery.of(context).size.width > 600
+                          ? 12
+                          : 10), // Responsive padding
                   decoration: BoxDecoration(
                     color: Colors.blue.shade50,
                     borderRadius: BorderRadius.circular(8),
@@ -951,60 +1236,117 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.note, color: Colors.blue.shade600, size: 16),
-                      const SizedBox(width: 8),
+                      Icon(Icons.note,
+                          color: Colors.blue.shade600,
+                          size: MediaQuery.of(context).size.width > 600
+                              ? 16
+                              : 14), // Responsive icon size
+                      SizedBox(
+                          width: MediaQuery.of(context).size.width > 600
+                              ? 8
+                              : 6), // Responsive spacing
                       Expanded(
                         child: Text(
                           order.specialInstructions!,
                           style: TextStyle(
                             color: Colors.blue.shade700,
-                            fontSize: 12,
+                            fontSize: MediaQuery.of(context).size.width > 600
+                                ? 12
+                                : 10, // Responsive font size
                           ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 2,
                         ),
                       ),
                     ],
                   ),
                 ),
               ],
-              // Action buttons
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () => _viewOrderDetails(order),
-                      icon: const Icon(Icons.visibility, size: 16),
-                      label: const Text('View Details'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: primaryPurple,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                  ),
-                  if (_canDeleteOrder(order)) ...[
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: () => _deleteOrder(order),
-                        icon: const Icon(Icons.delete, size: 16),
-                        label: const Text('Delete'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
+              // Action buttons with responsive design
+              SizedBox(
+                  height: MediaQuery.of(context).size.width > 600
+                      ? 16
+                      : 12), // Responsive spacing
+              MediaQuery.of(context).size.width > 600
+                  ? Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: () => _viewOrderDetails(order),
+                            icon: const Icon(Icons.visibility, size: 16),
+                            label: const Text('View Details'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: primaryPurple,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
                           ),
                         ),
-                      ),
+                        if (_canDeleteOrder(order)) ...[
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: () => _deleteOrder(order),
+                              icon: const Icon(Icons.delete, size: 16),
+                              label: const Text('Delete'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red,
+                                foregroundColor: Colors.white,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    )
+                  : Column(
+                      // Stack vertically for smaller screens
+                      children: [
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: () => _viewOrderDetails(order),
+                            icon: const Icon(Icons.visibility, size: 16),
+                            label: const Text('View Details'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: primaryPurple,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (_canDeleteOrder(order)) ...[
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: () => _deleteOrder(order),
+                              icon: const Icon(Icons.delete, size: 16),
+                              label: const Text('Delete'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red,
+                                foregroundColor: Colors.white,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                  ],
-                ],
-              ),
             ],
           ),
         ),
@@ -1049,18 +1391,17 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
       try {
         print('Attempting to delete order ${order.id}');
         print(
-            'API URL: http://192.168.100.81:8000/api/v1/bulk-orders/${order.id}');
+            'API URL: http://192.168.100.4:8080/api/v1/bulk-orders/${order.id}');
 
         // Test connection first
         final testResponse = await http.get(
-          Uri.parse('http://192.168.100.81:8000/api/v1/bulk-orders'),
+          Uri.parse('http://192.168.100.4:8080/api/v1/bulk-orders'),
           headers: {'Content-Type': 'application/json'},
         );
         print('Test connection status: ${testResponse.statusCode}');
 
         final response = await http.delete(
-          Uri.parse(
-              'http://192.168.100.81:8000/api/v1/bulk-orders/${order.id}'),
+          Uri.parse('http://192.168.100.4:8080/api/v1/bulk-orders/${order.id}'),
           headers: {'Content-Type': 'application/json'},
         );
 
@@ -1105,25 +1446,42 @@ class _BulkOrderScreenState extends State<BulkOrderScreen>
   }) {
     return Column(
       children: [
-        Icon(icon, color: color, size: 20),
-        const SizedBox(height: 8),
+        Icon(icon,
+            color: color,
+            size: MediaQuery.of(context).size.width > 600
+                ? 20
+                : 18), // Responsive icon size
+        SizedBox(
+            height: MediaQuery.of(context).size.width > 600
+                ? 8
+                : 6), // Responsive spacing
         Text(
           label,
           style: TextStyle(
             color: Colors.grey.shade600,
-            fontSize: 12,
+            fontSize: MediaQuery.of(context).size.width > 600
+                ? 12
+                : 10, // Responsive font size
             fontWeight: FontWeight.w500,
           ),
+          overflow: TextOverflow.ellipsis,
         ),
-        const SizedBox(height: 4),
+        SizedBox(
+            height: MediaQuery.of(context).size.width > 600
+                ? 4
+                : 2), // Responsive spacing
         Text(
           value,
-          style: const TextStyle(
+          style: TextStyle(
             color: darkPurple,
-            fontSize: 14,
+            fontSize: MediaQuery.of(context).size.width > 600
+                ? 14
+                : 12, // Responsive font size
             fontWeight: FontWeight.bold,
           ),
           textAlign: TextAlign.center,
+          overflow: TextOverflow.ellipsis,
+          maxLines: 2,
         ),
       ],
     );
@@ -1182,27 +1540,104 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
   DateTime _deliveryDate = DateTime.now().add(const Duration(days: 7));
   TimeOfDay? _deliveryTime;
   final List<BulkOrderItem> _items = [];
+  bool? _isUserLoggedIn;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserData();
+  }
+
+  Future<void> _loadUserData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('authToken');
+
+      print('Loading user data for bulk order...');
+      print('Auth token exists: ${token != null}');
+
+      setState(() {
+        _isUserLoggedIn = token != null;
+      });
+
+      if (token != null) {
+        // User is logged in, try to fetch latest profile data
+        try {
+          print('Fetching user profile from API...');
+          final ApiService apiService = ApiService();
+          final userData = await apiService.getUserProfile();
+          print('API Response: $userData');
+
+          setState(() {
+            // API response structure: { success: true, data: { user fields } }
+            final data = userData['data'] ?? userData;
+            _customerNameController.text = data['name'] ?? '';
+            _customerEmailController.text = data['email'] ?? '';
+            _customerPhoneController.text = data['phone'] ?? '';
+            _deliveryAddressController.text = data['address'] ?? '';
+          });
+          print('Form fields filled from API data');
+          return;
+        } catch (e) {
+          print('Error fetching user profile: $e');
+          // Fall back to cached data
+        }
+
+        // Load cached user data from SharedPreferences
+        final userName = prefs.getString('user_name') ?? '';
+        final userEmail = prefs.getString('user_email') ?? '';
+        final userPhone = prefs.getString('user_phone') ?? '';
+        final userAddress = prefs.getString('user_address') ?? '';
+
+        print('SharedPreferences data:');
+        print('Name: $userName');
+        print('Email: $userEmail');
+        print('Phone: $userPhone');
+        print('Address: $userAddress');
+
+        // Pre-fill form fields
+        setState(() {
+          _customerNameController.text = userName;
+          _customerEmailController.text = userEmail;
+          _customerPhoneController.text = userPhone;
+          _deliveryAddressController.text = userAddress;
+        });
+        print('Form fields filled from SharedPreferences');
+      }
+    } catch (e) {
+      print('Error loading user data: $e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+          ? 16
+          : 12), // Responsive padding
       child: Form(
         key: _formKey,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildInfoCard(),
-            const SizedBox(height: 20),
+            SizedBox(
+                height: MediaQuery.of(context).size.width > 600
+                    ? 20
+                    : 16), // Responsive spacing
             _buildCompanyDetailsSection(),
-            const SizedBox(height: 20),
+            SizedBox(height: MediaQuery.of(context).size.width > 600 ? 20 : 16),
             _buildDeliverySection(),
-            const SizedBox(height: 20),
+            SizedBox(height: MediaQuery.of(context).size.width > 600 ? 20 : 16),
             _buildItemsSection(),
-            const SizedBox(height: 20),
+            SizedBox(height: MediaQuery.of(context).size.width > 600 ? 20 : 16),
             _buildNotesSection(),
-            const SizedBox(height: 20),
+            SizedBox(height: MediaQuery.of(context).size.width > 600 ? 20 : 16),
+            _buildPaymentInfoSection(),
+            SizedBox(height: MediaQuery.of(context).size.width > 600 ? 20 : 16),
             _buildSubmitButton(),
+            const SizedBox(
+                height: 20), // Extra bottom padding for better scrolling
           ],
         ),
       ),
@@ -1212,31 +1647,50 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
   Widget _buildInfoCard() {
     return Card(
       color: AppTheme.primaryColor.withOpacity(0.1),
-      child: const Padding(
-        padding: EdgeInsets.all(16),
+      child: Padding(
+        padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+            ? 16
+            : 12), // Responsive padding
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Icon(Icons.info, color: AppTheme.primaryColor),
-                SizedBox(width: 8),
-                Text(
-                  'Bulk Order Benefits',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.primaryColor,
+                const Icon(Icons.info, color: AppTheme.primaryColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  // Added Expanded to prevent overflow
+                  child: Text(
+                    'Bulk Order Benefits',
+                    style: TextStyle(
+                      fontSize: MediaQuery.of(context).size.width > 600
+                          ? 18
+                          : 16, // Responsive font size
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.primaryColor,
+                    ),
+                    overflow: TextOverflow.ellipsis, // Handle overflow
                   ),
                 ),
               ],
             ),
-            SizedBox(height: 12),
-            Text('• Minimum 10 items for bulk pricing'),
-            Text('• Up to 20% discount on large orders'),
-            Text('• Flexible delivery scheduling'),
-            Text('• Dedicated customer support'),
-            Text('• Custom payment terms available'),
+            const SizedBox(height: 12),
+            // Make benefit text responsive
+            ...const [
+              '• Minimum 10 items for bulk pricing',
+              '• Up to 20% discount on large orders',
+              '• Flexible delivery scheduling',
+              '• Dedicated customer support',
+              '• Custom payment terms available',
+            ].map((text) => Padding(
+                  padding: EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    text,
+                    style: TextStyle(fontSize: 14),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                )),
           ],
         ),
       ),
@@ -1247,35 +1701,76 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Company Details',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        Row(
+          children: [
+            Text(
+              'Customer Details',
+              style: TextStyle(
+                fontSize: MediaQuery.of(context).size.width > 600
+                    ? 18
+                    : 16, // Responsive font size
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const Spacer(),
+            if (_isUserLoggedIn == true)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.green),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green, size: 16),
+                    SizedBox(width: 4),
+                    Text(
+                      'Auto-filled',
+                      style: TextStyle(
+                        color: Colors.green,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
         ),
-        const SizedBox(height: 16),
+        SizedBox(
+            height: MediaQuery.of(context).size.width > 600
+                ? 16
+                : 12), // Responsive spacing
         TextFormField(
           controller: _customerNameController,
           decoration: const InputDecoration(
             labelText: 'Customer Name *',
             border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(
+                horizontal: 12, vertical: 16), // Added padding
           ),
           validator: (value) => value?.isEmpty == true ? 'Required' : null,
         ),
-        const SizedBox(height: 16),
+        SizedBox(height: MediaQuery.of(context).size.width > 600 ? 16 : 12),
         TextFormField(
           controller: _customerPhoneController,
           decoration: const InputDecoration(
             labelText: 'Customer Phone *',
             border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
           ),
           keyboardType: TextInputType.phone,
           validator: (value) => value?.isEmpty == true ? 'Required' : null,
         ),
-        const SizedBox(height: 16),
+        SizedBox(height: MediaQuery.of(context).size.width > 600 ? 16 : 12),
         TextFormField(
           controller: _customerEmailController,
           decoration: const InputDecoration(
             labelText: 'Customer Email *',
             border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
           ),
           keyboardType: TextInputType.emailAddress,
           validator: (value) {
@@ -1284,12 +1779,13 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
             return null;
           },
         ),
-        const SizedBox(height: 16),
+        SizedBox(height: MediaQuery.of(context).size.width > 600 ? 16 : 12),
         TextFormField(
           controller: _deliveryAddressController,
           decoration: const InputDecoration(
             labelText: 'Delivery Address *',
             border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
           ),
           maxLines: 3,
           validator: (value) => value?.isEmpty == true ? 'Required' : null,
@@ -1302,16 +1798,25 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Delivery Details',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            fontSize: MediaQuery.of(context).size.width > 600
+                ? 18
+                : 16, // Responsive font size
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        const SizedBox(height: 16),
+        SizedBox(
+            height: MediaQuery.of(context).size.width > 600
+                ? 16
+                : 12), // Responsive spacing
         DropdownButtonFormField<String>(
           value: _orderType,
           decoration: const InputDecoration(
             labelText: 'Order Type',
             border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
           ),
           items: const [
             DropdownMenuItem(value: 'birthday', child: Text('Birthday')),
@@ -1321,34 +1826,37 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
           ],
           onChanged: (value) => setState(() => _orderType = value!),
         ),
-        const SizedBox(height: 16),
+        SizedBox(height: MediaQuery.of(context).size.width > 600 ? 16 : 12),
         DropdownButtonFormField<String>(
           value: _paymentMethod,
           decoration: const InputDecoration(
             labelText: 'Payment Method',
             border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
           ),
           items: const [
-            DropdownMenuItem(value: 'cash', child: Text('Cash')),
-            DropdownMenuItem(value: 'online', child: Text('Online')),
-            DropdownMenuItem(value: 'credit', child: Text('Credit')),
+            DropdownMenuItem(value: 'cash', child: Text('Cash on Delivery')),
+            DropdownMenuItem(
+                value: 'online', child: Text('Online Payment (PayFast)')),
           ],
           onChanged: (value) => setState(() => _paymentMethod = value!),
         ),
-        const SizedBox(height: 16),
+        SizedBox(height: MediaQuery.of(context).size.width > 600 ? 16 : 12),
         InkWell(
           onTap: () => _selectDeliveryDate(),
           child: InputDecorator(
             decoration: const InputDecoration(
               labelText: 'Delivery Date',
               border: OutlineInputBorder(),
+              contentPadding:
+                  EdgeInsets.symmetric(horizontal: 12, vertical: 16),
             ),
             child: Text(
               '${_deliveryDate.day}/${_deliveryDate.month}/${_deliveryDate.year}',
             ),
           ),
         ),
-        const SizedBox(height: 16),
+        SizedBox(height: MediaQuery.of(context).size.width > 600 ? 16 : 12),
         InkWell(
           onTap: () => _selectDeliveryTime(),
           child: InputDecorator(
@@ -1372,25 +1880,53 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'Order Items',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Expanded(
+              // Added Expanded to prevent overflow
+              child: Text(
+                'Order Items',
+                style: TextStyle(
+                  fontSize: MediaQuery.of(context).size.width > 600
+                      ? 18
+                      : 16, // Responsive font size
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis, // Handle overflow
+              ),
             ),
-            ElevatedButton.icon(
-              onPressed: _addItem,
-              icon: const Icon(Icons.add),
-              label: const Text('Add Item'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.primaryColor,
-                foregroundColor: Colors.white,
+            const SizedBox(width: 8), // Small space between title and button
+            Flexible(
+              // Changed to Flexible to allow shrinking
+              child: ElevatedButton.icon(
+                onPressed: _addItem,
+                icon: const Icon(Icons.add, size: 18), // Smaller icon
+                label: Text(
+                  MediaQuery.of(context).size.width > 600
+                      ? 'Add Item'
+                      : 'Add', // Responsive text
+                  style: const TextStyle(fontSize: 14),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryColor,
+                  foregroundColor: Colors.white,
+                  padding: EdgeInsets.symmetric(
+                    horizontal:
+                        MediaQuery.of(context).size.width > 600 ? 16 : 8,
+                    vertical: 8,
+                  ),
+                ),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 16),
+        SizedBox(
+            height: MediaQuery.of(context).size.width > 600
+                ? 16
+                : 12), // Responsive spacing
         if (_items.isEmpty)
           Container(
-            padding: const EdgeInsets.all(32),
+            padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+                ? 32
+                : 20), // Responsive padding
             decoration: BoxDecoration(
               border: Border.all(color: Colors.grey.shade300),
               borderRadius: BorderRadius.circular(8),
@@ -1399,13 +1935,30 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
               child: Column(
                 children: [
                   Icon(Icons.add_shopping_cart,
-                      size: 48, color: Colors.grey.shade400),
+                      size: MediaQuery.of(context).size.width > 600
+                          ? 48
+                          : 40, // Responsive icon size
+                      color: Colors.grey.shade400),
                   const SizedBox(height: 8),
                   Text(
                     'No items added yet',
-                    style: TextStyle(color: Colors.grey.shade600),
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 14,
+                    ),
+                    textAlign: TextAlign.center,
                   ),
-                  const Text('Minimum 10 items required for bulk pricing'),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Minimum 10 items required for bulk pricing',
+                    style: TextStyle(
+                      color: Colors.grey.shade500,
+                      fontSize: 12,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ],
               ),
             ),
@@ -1417,15 +1970,21 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
             return Card(
               margin: const EdgeInsets.only(bottom: 8),
               child: ListTile(
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: MediaQuery.of(context).size.width > 600 ? 16 : 12,
+                  vertical: 8,
+                ),
                 title: Text(
                   item.productName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 14),
                 ),
                 subtitle: Text(
                   'Qty: ${item.quantity} × Rs. ${item.price.toStringAsFixed(0)}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
                 ),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1433,13 +1992,23 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
                     Flexible(
                       child: Text(
                         'Rs. ${item.total.toStringAsFixed(0)}',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    IconButton(
-                      onPressed: () => _removeItem(index),
-                      icon: const Icon(Icons.delete, color: Colors.red),
+                    const SizedBox(width: 4),
+                    SizedBox(
+                      width: 32, // Fixed width for delete button
+                      child: IconButton(
+                        onPressed: () => _removeItem(index),
+                        icon: const Icon(Icons.delete,
+                            color: Colors.red, size: 18),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
                     ),
                   ],
                 ),
@@ -1447,7 +2016,7 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
             );
           }),
         if (_items.isNotEmpty) ...[
-          const SizedBox(height: 16),
+          SizedBox(height: MediaQuery.of(context).size.width > 600 ? 16 : 12),
           _buildPricingSummary(),
         ],
       ],
@@ -1471,28 +2040,40 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
     return Card(
       color: AppTheme.primaryColor.withOpacity(0.05),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.all(MediaQuery.of(context).size.width > 600
+            ? 16
+            : 12), // Responsive padding
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Pricing Summary',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                fontSize: MediaQuery.of(context).size.width > 600
+                    ? 16
+                    : 14, // Responsive font size
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Flexible(
+                Expanded(
                   flex: 2,
-                  child: Text('Total Items: $totalItems'),
+                  child: Text(
+                    'Total Items: $totalItems',
+                    style: const TextStyle(fontSize: 14),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
+                const SizedBox(width: 8),
                 if (totalItems >= 10)
                   Flexible(
                     flex: 1,
                     child: Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
+                          horizontal: 6, vertical: 3), // Reduced padding
                       decoration: BoxDecoration(
                         color: Colors.green.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(12),
@@ -1502,18 +2083,22 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
                         style: TextStyle(
                           color: Colors.green.shade700,
                           fontWeight: FontWeight.bold,
-                          fontSize: 12,
+                          fontSize: 10,
                         ),
                         textAlign: TextAlign.center,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   )
                 else
-                  Flexible(
+                  Expanded(
                     flex: 1,
                     child: Text(
                       'Need ${10 - totalItems} more for bulk pricing',
-                      style: TextStyle(color: Colors.orange.shade700),
+                      style: TextStyle(
+                        color: Colors.orange.shade700,
+                        fontSize: 11,
+                      ),
                       textAlign: TextAlign.end,
                       overflow: TextOverflow.ellipsis,
                       maxLines: 2,
@@ -1525,15 +2110,20 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Flexible(
+                const Expanded(
                   flex: 1,
-                  child: Text('Subtotal:'),
+                  child: Text(
+                    'Subtotal:',
+                    style: TextStyle(fontSize: 14),
+                  ),
                 ),
-                Flexible(
+                Expanded(
                   flex: 1,
                   child: Text(
                     'Rs. ${totalAmount.toStringAsFixed(0)}',
                     textAlign: TextAlign.end,
+                    style: const TextStyle(fontSize: 14),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -1542,16 +2132,24 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Flexible(
+                  Expanded(
                     flex: 1,
-                    child: Text('Discount ($discountPercent%):'),
+                    child: Text(
+                      'Discount ($discountPercent%):',
+                      style: const TextStyle(fontSize: 14),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                  Flexible(
+                  Expanded(
                     flex: 1,
                     child: Text(
                       '- Rs. ${discountAmount.toStringAsFixed(0)}',
-                      style: const TextStyle(color: Colors.green),
+                      style: const TextStyle(
+                        color: Colors.green,
+                        fontSize: 14,
+                      ),
                       textAlign: TextAlign.end,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
@@ -1561,14 +2159,15 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Flexible(
+                const Expanded(
                   flex: 1,
                   child: Text(
                     'Final Amount:',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                Flexible(
+                Expanded(
                   flex: 1,
                   child: Text(
                     'Rs. ${finalAmount.toStringAsFixed(0)}',
@@ -1578,6 +2177,7 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
                       color: AppTheme.primaryColor,
                     ),
                     textAlign: TextAlign.end,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -1592,21 +2192,217 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
+        Text(
           'Additional Notes',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            fontSize: MediaQuery.of(context).size.width > 600
+                ? 18
+                : 16, // Responsive font size
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        const SizedBox(height: 16),
+        SizedBox(
+            height: MediaQuery.of(context).size.width > 600
+                ? 16
+                : 12), // Responsive spacing
         TextFormField(
           controller: _specialInstructionsController,
           decoration: const InputDecoration(
             labelText: 'Special instructions or requirements',
             border: OutlineInputBorder(),
             hintText: 'e.g., Specific delivery time, packaging requirements...',
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
           ),
           maxLines: 4,
         ),
       ],
+    );
+  }
+
+  Widget _buildPaymentInfoSection() {
+    // Calculate totals for display
+    final totalAmount = _items.fold(0.0, (sum, item) => sum + item.total);
+    final totalItems = _items.fold(0, (sum, item) => sum + item.quantity);
+
+    double discountPercent = 0;
+    if (totalItems >= 100) {
+      discountPercent = 20;
+    } else if (totalItems >= 50) {
+      discountPercent = 15;
+    } else if (totalItems >= 10) {
+      discountPercent = 10;
+    }
+
+    final discountAmount = totalAmount * (discountPercent / 100);
+    final finalAmount = totalAmount - discountAmount;
+
+    return Card(
+      color: _paymentMethod == 'online'
+          ? Colors.blue.withOpacity(0.05)
+          : Colors.grey.withOpacity(0.05),
+      child: Padding(
+        padding:
+            EdgeInsets.all(MediaQuery.of(context).size.width > 600 ? 16 : 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  _paymentMethod == 'online'
+                      ? Icons.credit_card
+                      : _paymentMethod == 'cash'
+                          ? Icons.local_shipping
+                          : Icons.account_balance,
+                  color: _paymentMethod == 'online'
+                      ? Colors.blue
+                      : _paymentMethod == 'cash'
+                          ? Colors.green
+                          : Colors.orange,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Payment Information',
+                  style: TextStyle(
+                    fontSize: MediaQuery.of(context).size.width > 600 ? 18 : 16,
+                    fontWeight: FontWeight.bold,
+                    color: _paymentMethod == 'online'
+                        ? Colors.blue
+                        : AppTheme.primaryColor,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (_paymentMethod == 'online') ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.security, color: Colors.blue, size: 20),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Secure Online Payment',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('• Pay instantly with PayFast gateway'),
+                    const Text('• Secure credit/debit card processing'),
+                    const Text('• Instant payment confirmation'),
+                    const Text('• Order processing begins immediately'),
+                  ],
+                ),
+              ),
+            ] else if (_paymentMethod == 'cash') ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.withOpacity(0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.local_shipping,
+                            color: Colors.green, size: 20),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Cash on Delivery',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('• Pay when your order is delivered'),
+                    const Text('• No advance payment required'),
+                    const Text('• Order confirmed via phone call'),
+                    const Text('• Flexible payment at delivery'),
+                  ],
+                ),
+              ),
+            ],
+            // Show payment amount if items exist
+            if (_items.isNotEmpty && totalItems >= 10) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.primaryColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border:
+                      Border.all(color: AppTheme.primaryColor.withOpacity(0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Total Items:',
+                            style: TextStyle(fontWeight: FontWeight.w500)),
+                        Text('$totalItems items',
+                            style:
+                                const TextStyle(fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Subtotal:'),
+                        Text('Rs. ${totalAmount.toStringAsFixed(0)}'),
+                      ],
+                    ),
+                    if (discountPercent > 0) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                              'Discount (${discountPercent.toStringAsFixed(0)}%):'),
+                          Text('- Rs. ${discountAmount.toStringAsFixed(0)}',
+                              style: const TextStyle(color: Colors.green)),
+                        ],
+                      ),
+                    ],
+                    const Divider(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                            '${_paymentMethod == 'online' ? 'Amount to Pay:' : 'Total Amount:'}',
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 16)),
+                        Text('Rs. ${finalAmount.toStringAsFixed(0)}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: _paymentMethod == 'online'
+                                  ? Colors.blue
+                                  : AppTheme.primaryColor,
+                            )),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
@@ -1616,7 +2412,9 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
 
     return SizedBox(
       width: double.infinity,
-      height: 50,
+      height: MediaQuery.of(context).size.width > 600
+          ? 50
+          : 48, // Responsive height
       child: ElevatedButton(
         onPressed: canSubmit ? _submitOrder : null,
         style: ElevatedButton.styleFrom(
@@ -1625,10 +2423,19 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(8),
           ),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         ),
         child: Text(
-          canSubmit ? 'Submit Bulk Order' : 'Add at least 10 items to proceed',
-          style: const TextStyle(fontSize: 16),
+          canSubmit
+              ? (_paymentMethod == 'online'
+                  ? 'Proceed to Payment'
+                  : 'Submit Bulk Order')
+              : 'Add at least 10 items to proceed',
+          style: TextStyle(
+            fontSize: MediaQuery.of(context).size.width > 600
+                ? 16
+                : 14, // Responsive font size
+          ),
           textAlign: TextAlign.center,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
@@ -1641,7 +2448,8 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
     final date = await showDatePicker(
       context: context,
       initialDate: _deliveryDate,
-      firstDate: DateTime.now().add(const Duration(days: 1)),
+      firstDate: DateTime.now()
+          .add(const Duration(days: 5)), // Only allow dates 5 days after today
       lastDate: DateTime.now().add(const Duration(days: 365)),
     );
     if (date != null) {
@@ -1770,7 +2578,7 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
               : null,
           deliveryAddress: _deliveryAddressController.text,
           orderType: _orderType,
-          paymentMethod: _paymentMethod,
+          paymentMethod: _paymentMethod, // Send 'online' or 'cash' directly
           paymentStatus: 'pending', // Default payment status
           deliveryDate: _deliveryDate,
           deliveryTime: _deliveryTime?.format(context),
@@ -1791,16 +2599,88 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
 
         // Submit to backend
         final ApiService apiService = ApiService();
-        await apiService.createBulkOrder(bulkOrder);
+        final createdOrder = await apiService.createBulkOrder(bulkOrder);
+        print(
+            'Order successfully created with ID: ${createdOrder.id}'); // Debug log
 
         // Close loading dialog
         Navigator.pop(context);
 
-        // Refresh the orders list immediately to show the new order
+        // Handle payment based on method
+        if (_paymentMethod == 'online') {
+          // Navigate to payment screen for online payment
+          final paymentResult = await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PaymentScreen(
+                amount: finalAmount,
+                orderId: createdOrder.id.toString(),
+                customerName: _customerNameController.text,
+                customerEmail: _customerEmailController.text.isNotEmpty
+                    ? _customerEmailController.text
+                    : 'bulk@bakehub.com',
+                customerMobile: _customerPhoneController.text,
+                description: 'BakeHub Bulk Order #${createdOrder.id}',
+              ),
+            ),
+          );
+
+          if (paymentResult == true) {
+            // Payment successful - show success message
+            _showOrderSuccessDialog(createdOrder.id.toString(), true);
+          } else {
+            // Payment failed or cancelled - show appropriate message
+            _showPaymentFailedDialog(createdOrder.id.toString());
+            return;
+          }
+        } else {
+          // Cash payment - show success immediately
+          _showOrderSuccessDialog(createdOrder.id.toString(), false);
+        }
+
+        // Clear form first
+        _clearForm();
+
+        // Get reference to the main screen state
         final bulkOrderState =
             context.findAncestorStateOfType<_BulkOrderScreenState>();
         if (bulkOrderState != null) {
+          // Add the created order to local state immediately for instant feedback
+          bulkOrderState.setState(() {
+            // Add to beginning of list so it appears at top
+            bulkOrderState._bulkOrders.insert(0, createdOrder);
+          });
+          print('Added created order to local state for instant feedback');
+
+          // Switch to Order History tab immediately
+          bulkOrderState._tabController.animateTo(1);
+          print('Switched to Order History tab'); // Debug log
+
+          // Multiple refresh attempts with longer delays to ensure order appears from API
           await bulkOrderState._loadBulkOrders();
+          print('First refresh completed'); // Debug log
+
+          // Additional refreshes with increasing delays
+          Future.delayed(const Duration(seconds: 1), () {
+            if (bulkOrderState.mounted) {
+              print('Second refresh after 1 second');
+              bulkOrderState._loadBulkOrders();
+            }
+          });
+
+          Future.delayed(const Duration(seconds: 3), () {
+            if (bulkOrderState.mounted) {
+              print('Third refresh after 3 seconds');
+              bulkOrderState._loadBulkOrders();
+            }
+          });
+
+          Future.delayed(const Duration(seconds: 5), () {
+            if (bulkOrderState.mounted) {
+              print('Fourth refresh after 5 seconds');
+              bulkOrderState._loadBulkOrders();
+            }
+          });
         }
 
         // Show success dialog
@@ -1875,27 +2755,48 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
               TextButton(
                 onPressed: () {
                   Navigator.pop(context); // Close dialog
-                  // Clear form and switch to order history tab
-                  _clearForm();
-                  // Switch to Order History tab to see the new order
-                  if (mounted) {
-                    final bulkOrderState = context
-                        .findAncestorStateOfType<_BulkOrderScreenState>();
-                    if (bulkOrderState != null) {
-                      bulkOrderState._tabController.animateTo(1);
-                      // Refresh the orders list after a short delay
-                      Future.delayed(const Duration(milliseconds: 500), () {
-                        bulkOrderState._loadBulkOrders();
-                      });
-                    }
+                  // Get reference to the main screen state and ensure we're on Order History tab
+                  final bulkOrderState =
+                      context.findAncestorStateOfType<_BulkOrderScreenState>();
+                  if (bulkOrderState != null) {
+                    bulkOrderState._tabController.animateTo(1);
+                    // Refresh the orders list after a short delay to ensure tab is switched
+                    Future.delayed(const Duration(milliseconds: 300), () {
+                      bulkOrderState._loadBulkOrders(isManualRefresh: true);
+                    });
                   }
                 },
                 child: const Text('View Orders'),
               ),
+              TextButton(
+                onPressed: () {
+                  // Manual refresh without closing dialog
+                  final bulkOrderState =
+                      context.findAncestorStateOfType<_BulkOrderScreenState>();
+                  if (bulkOrderState != null) {
+                    bulkOrderState._tabController.animateTo(1);
+                    bulkOrderState._loadBulkOrders(isManualRefresh: true);
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Refreshing order history...'),
+                        backgroundColor: AppTheme.primaryColor,
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                },
+                child: const Text('Refresh Now'),
+              ),
               ElevatedButton(
                 onPressed: () {
                   Navigator.pop(context); // Close dialog
-                  _clearForm(); // Clear form for new order
+                  // Switch back to Create Order tab for new order
+                  final bulkOrderState =
+                      context.findAncestorStateOfType<_BulkOrderScreenState>();
+                  if (bulkOrderState != null) {
+                    bulkOrderState._tabController.animateTo(0);
+                  }
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.primaryColor,
@@ -1976,6 +2877,228 @@ class _CreateBulkOrderFormState extends State<CreateBulkOrderForm> {
       _deliveryTime = null;
       _items.clear();
     });
+    // Reload user data for next order
+    _loadUserData();
+  }
+
+  void _showOrderSuccessDialog(String orderId, bool isPaidOnline) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(15),
+        ),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.check_circle,
+                color: Colors.green,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                isPaidOnline ? 'Payment Successful!' : 'Order Submitted!',
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.6,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  isPaidOnline
+                      ? 'Your bulk order payment has been processed successfully!'
+                      : 'Your bulk order has been submitted successfully!',
+                  style: const TextStyle(fontSize: 16),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.primaryColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Order #$orderId',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Text(
+                          'Payment Status: ${isPaidOnline ? "Paid Online" : "Pending"}'),
+                      const Text('Order Status: Processing'),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'You will receive a confirmation call from our team within 24 hours.',
+                  style: TextStyle(fontSize: 14, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Switch to Order History tab
+              final bulkOrderState =
+                  context.findAncestorStateOfType<_BulkOrderScreenState>();
+              if (bulkOrderState != null) {
+                bulkOrderState._tabController.animateTo(1);
+                Future.delayed(const Duration(milliseconds: 300), () {
+                  bulkOrderState._loadBulkOrders(isManualRefresh: true);
+                });
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryColor,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('View Orders'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showPaymentFailedDialog(String orderId) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(15),
+        ),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.warning,
+                color: Colors.orange,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Payment Incomplete',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.6,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Your bulk order has been created but payment was not completed.',
+                  style: TextStyle(fontSize: 16),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Order #$orderId',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      const Text('Payment Status: Pending'),
+                      const Text('Order Status: Awaiting Payment'),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'You can complete the payment later from your order history or contact us for alternative payment methods.',
+                  style: TextStyle(fontSize: 14, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+            },
+            child: const Text('OK'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Switch to Order History tab
+              final bulkOrderState =
+                  context.findAncestorStateOfType<_BulkOrderScreenState>();
+              if (bulkOrderState != null) {
+                bulkOrderState._tabController.animateTo(1);
+                Future.delayed(const Duration(milliseconds: 300), () {
+                  bulkOrderState._loadBulkOrders(isManualRefresh: true);
+                });
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryColor,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('View Orders'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getPaymentMethodDisplayName(String paymentMethod) {
+    switch (paymentMethod) {
+      case 'cash':
+        return 'Cash on Delivery';
+      case 'online':
+        return 'Online Payment (PayFast)';
+      case 'gcash': // Legacy support
+        return 'Online Payment (PayFast)';
+      case 'bank_transfer': // Legacy support
+        return 'Bank Transfer';
+      case 'cash_on_delivery': // Legacy support
+        return 'Cash on Delivery';
+      case 'online_payment': // Legacy support
+        return 'Online Payment (PayFast)';
+      default:
+        return paymentMethod;
+    }
   }
 
   @override
@@ -2037,7 +3160,7 @@ class OrderDetailsSheet extends StatelessWidget {
                     'Address: ${order.deliveryAddress}',
                     'Status: ${order.status}',
                     'Order Type: ${order.orderType}',
-                    'Payment Method: ${order.paymentMethod}',
+                    'Payment Method: ${_getPaymentMethodDisplayName(order.paymentMethod)}',
                   ]),
                   _buildDetailSection('Delivery Details', [
                     'Delivery Date: ${order.deliveryDate.toString().split(' ')[0]}',
@@ -2081,6 +3204,25 @@ class OrderDetailsSheet extends StatelessWidget {
         const SizedBox(height: 16),
       ],
     );
+  }
+
+  String _getPaymentMethodDisplayName(String paymentMethod) {
+    switch (paymentMethod) {
+      case 'cash':
+        return 'Cash on Delivery';
+      case 'online':
+        return 'Online Payment (PayFast)';
+      case 'gcash': // Legacy support
+        return 'Online Payment (PayFast)';
+      case 'bank_transfer': // Legacy support
+        return 'Bank Transfer';
+      case 'cash_on_delivery': // Legacy support
+        return 'Cash on Delivery';
+      case 'online_payment': // Legacy support
+        return 'Online Payment (PayFast)';
+      default:
+        return paymentMethod;
+    }
   }
 }
 

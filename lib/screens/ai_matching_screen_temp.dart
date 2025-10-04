@@ -20,7 +20,7 @@ class _AIMatchingScreenState extends State<AIMatchingScreen> {
   String? _errorMessage;
 
   // API URL - Laravel Backend (Port 8000)
-  final String apiUrl = 'http://192.168.100.81:8000/api/v1/ai-cake';
+  final String apiUrl = 'http://192.168.100.4:8080/api/v1/ai-cake';
 
   final ImagePicker _picker = ImagePicker();
 

@@ -12,6 +12,8 @@ import 'screens/cake_customization_screen.dart';
 import 'screens/custom_cake_options_screen.dart';
 import 'screens/ai_matching_screen.dart';
 import 'screens/menu_screen.dart';
+import 'screens/profile_screen.dart';
+import 'screens/payment_demo_screen.dart'; // Payment demo screen
 import 'theme/app_theme.dart';
 import 'screens/product_detail_screen.dart'; // Import the ProductDetailScreen
 import 'models/product.dart'; // Import the Product model
@@ -19,7 +21,7 @@ import 'models/product.dart'; // Import the Product model
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Set system UI overlay style globally
+  // Set system UI overlay style globally for smooth transitions
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -27,6 +29,12 @@ void main() {
       systemNavigationBarColor: Colors.white,
       systemNavigationBarIconBrightness: Brightness.dark,
     ),
+  );
+
+  // Enable smooth system UI transitions
+  SystemChrome.setEnabledSystemUIMode(
+    SystemUiMode.edgeToEdge,
+    overlays: [SystemUiOverlay.bottom],
   );
 
   runApp(const BakeHubApp());
@@ -52,6 +60,7 @@ class BakeHubApp extends StatelessWidget {
         '/custom-cake-options': (context) => const CustomCakeOptionsScreen(),
         '/ai-matching': (context) => const AIMatchingScreen(),
         '/menu': (context) => const MenuScreen(),
+        '/profile': (context) => const ProfileScreen(),
         '/product-detail': (context) {
           final product = ModalRoute.of(context)!.settings.arguments as Product;
           return ProductDetailScreen(product: product);

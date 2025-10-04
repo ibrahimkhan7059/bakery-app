@@ -23,12 +23,24 @@ class GlobalAppBar extends StatelessWidget implements PreferredSizeWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
+    // Set status bar immediately and smoothly
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      SystemChrome.setSystemUIOverlayStyle(
+        SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          systemNavigationBarColor: Colors.white,
+          systemNavigationBarIconBrightness: Brightness.dark,
+        ),
+      );
+    });
+
     return AppBar(
       elevation: 0,
       backgroundColor: theme.primaryColor,
-      automaticallyImplyLeading: false,  // Changed to false
+      automaticallyImplyLeading: false, // Changed to false
       toolbarHeight: 70,
-      leading: showBackButton 
+      leading: showBackButton
           ? Container(
               margin: const EdgeInsets.all(8),
               decoration: BoxDecoration(
@@ -50,48 +62,53 @@ class GlobalAppBar extends StatelessWidget implements PreferredSizeWidget {
             )
           : null,
       systemOverlayStyle: SystemUiOverlayStyle(
-        statusBarColor: theme.colorScheme.surface,
-        statusBarIconBrightness: theme.brightness == Brightness.dark
-            ? Brightness.light
-            : Brightness.dark,
+        statusBarColor: Colors.transparent, // Make status bar transparent
+        statusBarIconBrightness: Brightness.light, // White icons
+        systemNavigationBarColor: Colors.white, // Bottom navigation white
+        systemNavigationBarIconBrightness: Brightness.dark, // Dark icons
       ),
-      title: showTitle ? Padding(
-        padding: const EdgeInsets.only(left: 8),  // Adjusted padding for left alignment
-        child: Text(
-          title,
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ) : null,
-      centerTitle: false,  // Changed to false to align title to start
-      actions: actions ?? [
-        Container(
-          height: 40,
-          width: 40,
-          margin: const EdgeInsets.only(right: 8),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.2),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: IconButton(
-            icon: const Icon(
-              Icons.search,
-              color: Colors.white,
-              size: 20,
+      title: showTitle
+          ? Padding(
+              padding: const EdgeInsets.only(
+                  left: 8), // Adjusted padding for left alignment
+              child: Text(
+                title,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            )
+          : null,
+      centerTitle: false, // Changed to false to align title to start
+      actions: actions ??
+          [
+            Container(
+              height: 40,
+              width: 40,
+              margin: const EdgeInsets.only(right: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: IconButton(
+                icon: const Icon(
+                  Icons.search,
+                  color: Colors.white,
+                  size: 20,
+                ),
+                onPressed: () {
+                  Navigator.pushNamed(context, '/search');
+                },
+              ),
             ),
-            onPressed: () {
-              Navigator.pushNamed(context, '/search');
-            },
-          ),
-        ),
-      ],
+          ],
       bottom: bottom,
     );
   }
 
   @override
-  Size get preferredSize => Size.fromHeight(bottom?.preferredSize.height ?? 0 + 70);
-} 
+  Size get preferredSize =>
+      Size.fromHeight(bottom?.preferredSize.height ?? 0 + 70);
+}

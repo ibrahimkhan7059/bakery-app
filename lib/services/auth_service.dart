@@ -3,21 +3,23 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AuthService {
-  static const String baseUrl = 'http://192.168.100.81:8000/api/v1';
+  static const String baseUrl = 'http://192.168.100.4:8080/api/v1';
   static const String _tokenKey = 'auth_token';
   static const String _userKey = 'user_data';
 
   // Check if user is logged in
   Future<bool> isLoggedIn() async {
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString(_tokenKey);
+    // Check both possible token keys for compatibility
+    final token = prefs.getString('authToken') ?? prefs.getString(_tokenKey);
     return token != null && token.isNotEmpty;
   }
 
   // Get stored auth token
   Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_tokenKey);
+    // Try both possible token keys for compatibility
+    return prefs.getString('authToken') ?? prefs.getString(_tokenKey);
   }
 
   // Get current user data
@@ -33,7 +35,9 @@ class AuthService {
   // Save user data and token
   Future<void> saveUserData(String token, Map<String, dynamic> userData) async {
     final prefs = await SharedPreferences.getInstance();
+    // Save token with both keys for compatibility
     await prefs.setString(_tokenKey, token);
+    await prefs.setString('authToken', token);
     await prefs.setString(_userKey, jsonEncode(userData));
   }
 
@@ -143,8 +147,9 @@ class AuthService {
       print('Logout API call failed: $e');
     }
 
-    // Clear local storage regardless of API call result
+    // Clear local storage regardless of API call result - remove both token keys
     await prefs.remove(_tokenKey);
+    await prefs.remove('authToken');
     await prefs.remove(_userKey);
   }
 

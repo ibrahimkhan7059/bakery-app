@@ -6,6 +6,8 @@ import '../models/category.dart';
 import '../models/product.dart';
 import '../services/api_service.dart';
 import '../models/cart_item.dart';
+import 'payment_demo_screen.dart'; // Added for payment demo
+import 'cart_screen.dart' as CartScreen; // Added for cart functionality
 
 class MenuScreen extends StatefulWidget {
   const MenuScreen({Key? key}) : super(key: key);
@@ -27,6 +29,15 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+
+    // Set status bar color to match app bar
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+      ));
+    });
+
     _fetchCategories();
   }
 
@@ -122,6 +133,32 @@ class _MenuScreenState extends State<MenuScreen> with TickerProviderStateMixin {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context, true),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.shopping_cart),
+            tooltip: 'Shopping Cart',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const CartScreen.CartScreen(),
+                ),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.payment),
+            tooltip: 'Test Payment',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const PaymentDemoScreen(),
+                ),
+              );
+            },
+          ),
+        ],
         bottom: isLoadingCategories || categories.isEmpty
             ? null
             : PreferredSize(

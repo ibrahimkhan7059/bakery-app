@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // Added for SystemChrome
 import 'package:image_picker/image_picker.dart';
 import '../services/api_service.dart';
 import '../widgets/global_app_bar.dart';
@@ -77,17 +78,29 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
     WidgetsBinding.instance.addObserver(this);
+
     _loadCakeConfig();
-    _configRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+    // Reduced frequency and added error handling for connection stability
+    _configRefreshTimer = Timer.periodic(const Duration(minutes: 2), (_) {
       if (!mounted) return;
       _loadCakeConfig(silent: true);
     });
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _loadCakeConfig(silent: true);
+      // Add small delay before refreshing when app resumes
+      Future.delayed(const Duration(seconds: 1), () {
+        if (mounted) {
+          _loadCakeConfig(silent: true);
+        }
+      });
     }
   }
 
@@ -112,7 +125,15 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
       final prevFlavor = selectedFlavor;
       final prevFilling = selectedFilling;
       final prevFrosting = selectedFrosting;
-      final data = await ApiService().getCakeConfig();
+
+      // Add timeout and retry logic
+      final data = await ApiService().getCakeConfig().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          throw Exception(
+              'Connection timeout - please check your internet connection');
+        },
+      );
       final List sizes = (data['sizes'] as List?) ?? [];
       final List groups = (data['groups'] as List?) ?? [];
 
@@ -189,10 +210,23 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
         _configError = null;
       });
     } catch (e) {
-      setState(() {
-        if (!silent) _loadingConfig = false;
-        _configError = e.toString();
-      });
+      if (mounted) {
+        setState(() {
+          if (!silent) _loadingConfig = false;
+          _configError = e.toString();
+        });
+
+        // Show error only if not silent and mounted
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to load cake options: ${e.toString()}'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      }
     }
   }
 
@@ -368,17 +402,29 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
+    // Set status bar immediately and smoothly
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      SystemChrome.setSystemUIOverlayStyle(
+        SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          systemNavigationBarColor: Colors.white,
+          systemNavigationBarIconBrightness: Brightness.dark,
+        ),
+      );
+    });
+
     if (_loadingConfig) {
       return const Scaffold(
         appBar: GlobalAppBar(
-            title: 'BakeHub', showBackButton: true, actions: []),
+            title: '    Design a Cake', showBackButton: true, actions: []),
         body: Center(child: CircularProgressIndicator()),
       );
     }
     if (_configError != null) {
       return Scaffold(
         appBar: const GlobalAppBar(
-            title: 'BakeHub', showBackButton: true, actions: []),
+            title: 'Design a Cake', showBackButton: true, actions: []),
         body:
             Center(child: Text('Failed to load cake options.\n$_configError')),
       );
@@ -387,74 +433,87 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
     return Scaffold(
       backgroundColor: theme.colorScheme.surface,
       appBar: const GlobalAppBar(
-        title: 'BakeHub',
+        title: 'Design a Cake',
         showBackButton: true,
         actions: [],
       ),
-      body: Column(
-        children: [
-          const SizedBox(height: 16),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Container(
-              height: 80,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(15),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.grey.withOpacity(0.1),
-                    spreadRadius: 1,
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: TabBar(
-                controller: _tabController,
-                indicatorSize: TabBarIndicatorSize.tab,
-                indicatorPadding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                labelColor: Colors.white,
-                unselectedLabelColor: theme.primaryColor,
-                indicator: BoxDecoration(
-                  color: theme.primaryColor,
-                  borderRadius: BorderRadius.circular(10),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    const SizedBox(height: 16),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Container(
+                        height: 80,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(15),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.grey.withOpacity(0.1),
+                              spreadRadius: 1,
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: TabBar(
+                          controller: _tabController,
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          indicatorPadding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 8),
+                          labelColor: Colors.white,
+                          unselectedLabelColor: theme.primaryColor,
+                          indicator: BoxDecoration(
+                            color: theme.primaryColor,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          dividerColor: Colors.transparent,
+                          labelStyle: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          unselectedLabelStyle: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          padding: const EdgeInsets.all(8),
+                          isScrollable:
+                              false, // Prevent scrolling to show all tabs
+                          tabs: [
+                            _buildTab(Icons.cake_outlined, 'Size'),
+                            _buildTab(Icons.palette_outlined, 'Flavor'),
+                            _buildTab(Icons.layers_outlined, 'Filling'),
+                            _buildTab(Icons.brush_outlined, 'Frosting'),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      height: MediaQuery.of(context).size.height *
+                          0.4, // Reduced from 0.45 to 0.4
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: [
+                          _buildSizeSection(),
+                          _buildFlavorSection(),
+                          _buildFillingSection(),
+                          _buildFrostingSection(),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-                dividerColor: Colors.transparent,
-                labelStyle: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-                unselectedLabelStyle: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-                padding: const EdgeInsets.all(8),
-                isScrollable: false, // Prevent scrolling to show all tabs
-                tabs: [
-                  _buildTab(Icons.cake_outlined, 'Size'),
-                  _buildTab(Icons.palette_outlined, 'Flavor'),
-                  _buildTab(Icons.layers_outlined, 'Filling'),
-                  _buildTab(Icons.brush_outlined, 'Frosting'),
-                ],
               ),
             ),
-          ),
-          const SizedBox(height: 16),
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                _buildSizeSection(),
-                _buildFlavorSection(),
-                _buildFillingSection(),
-                _buildFrostingSection(),
-              ],
-            ),
-          ),
-          _buildOrderSummary(),
-        ],
+            _buildOrderSummary(),
+          ],
+        ),
       ),
     );
   }
@@ -640,34 +699,39 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
   }
 
   Widget _buildOrderSummary() {
-    return SafeArea(
-      top: false,
-      child: AnimatedPadding(
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 16,
-          bottom: (MediaQuery.of(context).viewInsets.bottom > 0
-                  ? MediaQuery.of(context).viewInsets.bottom
-                  : MediaQuery.of(context).padding.bottom) +
-              24,
-        ),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.grey.shade200,
-                blurRadius: 10,
-                offset: const Offset(0, -2),
-              ),
-            ],
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.shade200,
+            blurRadius: 10,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 8, // Reduced from 16 to 8
+            bottom: (MediaQuery.of(context).viewInsets.bottom > 0
+                    ? MediaQuery.of(context).viewInsets.bottom
+                    : MediaQuery.of(context).padding.bottom) +
+                8, // Reduced from 16 to 8
           ),
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.6,
+              maxHeight: MediaQuery.of(context).size.height < 600
+                  ? MediaQuery.of(context).size.height *
+                      0.4 // Small screens (phones in portrait)
+                  : MediaQuery.of(context).size.height < 800
+                      ? MediaQuery.of(context).size.height *
+                          0.3 // Medium screens (phones in landscape/small tablets)
+                      : MediaQuery.of(context).size.height *
+                          0.25, // Large screens (tablets/large phones)
             ),
             child: SingleChildScrollView(
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -890,7 +954,7 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8), // Reduced from 12 to 8
                   // Delivery Details Section
                   Container(
                     decoration: BoxDecoration(
@@ -986,7 +1050,7 @@ class _CakeCustomizationScreenState extends State<CakeCustomizationScreen>
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8), // Reduced from 12 to 8
                   Row(
                     children: [
                       Expanded(

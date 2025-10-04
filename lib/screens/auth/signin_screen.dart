@@ -53,27 +53,31 @@ class _SignInScreenState extends State<SignInScreen> {
           if (response['success'] == true && response.containsKey('token')) {
             await _saveToken(response['token']);
 
-            // Save user name if available in response
+            // Save user data if available in response
             final prefs = await SharedPreferences.getInstance();
             if (response.containsKey('user') && response['user'] != null) {
-              await prefs.setString(
-                  'user_name', response['user']['name'] ?? 'User');
+              final user = response['user'];
+              await prefs.setString('user_name', user['name'] ?? '');
+              await prefs.setString('user_email', user['email'] ?? '');
+              await prefs.setString('user_phone', user['phone'] ?? '');
+              await prefs.setString('user_address', user['address'] ?? '');
+              print('Saved user data to SharedPreferences: $user');
             }
 
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Login Successful!')),
             );
-            // Navigate to home screen - ensure you have a HomeScreen and route defined
-            // For example, if you have a named route '/home':
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (context) => const HomeScreen()),
-            );
-            // Or directly:
-            // Navigator.pushReplacement(
-            //   context,
-            //   MaterialPageRoute(builder: (context) => const HomeScreen()),
-            // );
+
+            // Check if this screen was pushed as a modal (for checkout)
+            if (Navigator.canPop(context)) {
+              Navigator.pop(context, true); // Return success
+            } else {
+              // Navigate to home screen if not modal
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const HomeScreen()),
+              );
+            }
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
