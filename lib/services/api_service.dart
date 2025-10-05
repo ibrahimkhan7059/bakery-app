@@ -806,11 +806,68 @@ class ApiService {
       print('Orders API response body: ${response.body}');
 
       if (response.statusCode == 200) {
-        final jsonResponse = json.decode(response.body);
-        if (jsonResponse['data'] is List) {
-          return List<Map<String, dynamic>>.from(jsonResponse['data']);
-        } else {
-          throw Exception('Invalid response format: expected data array');
+        try {
+          final jsonResponse = json.decode(response.body);
+          print('Parsed JSON response type: ${jsonResponse.runtimeType}');
+          print(
+              'Response keys: ${jsonResponse is Map ? jsonResponse.keys : 'Not a Map'}');
+
+          // Handle different response formats
+          if (jsonResponse is Map<String, dynamic>) {
+            // If response has 'data' key
+            if (jsonResponse.containsKey('data') &&
+                jsonResponse['data'] is List) {
+              final dataList = jsonResponse['data'] as List;
+              print('Found data array with ${dataList.length} items');
+              return dataList.map((item) {
+                if (item is Map) {
+                  return Map<String, dynamic>.from(item);
+                } else {
+                  print('Warning: Item is not a Map: ${item.runtimeType}');
+                  return <String, dynamic>{'raw_data': item};
+                }
+              }).toList();
+            }
+            // If response has 'orders' key
+            else if (jsonResponse.containsKey('orders') &&
+                jsonResponse['orders'] is List) {
+              final ordersList = jsonResponse['orders'] as List;
+              print('Found orders array with ${ordersList.length} items');
+              return ordersList.map((item) {
+                if (item is Map) {
+                  return Map<String, dynamic>.from(item);
+                } else {
+                  print('Warning: Item is not a Map: ${item.runtimeType}');
+                  return <String, dynamic>{'raw_data': item};
+                }
+              }).toList();
+            }
+            // If the response itself is the orders data (single order)
+            else {
+              print('Single order response');
+              return [Map<String, dynamic>.from(jsonResponse)];
+            }
+          }
+          // If response is directly a list
+          else if (jsonResponse is List) {
+            print('Direct list response with ${jsonResponse.length} items');
+            return jsonResponse.map((item) {
+              if (item is Map) {
+                return Map<String, dynamic>.from(item);
+              } else {
+                print('Warning: Item is not a Map: ${item.runtimeType}');
+                return <String, dynamic>{'raw_data': item};
+              }
+            }).toList();
+          } else {
+            print('Unexpected response format: ${jsonResponse.runtimeType}');
+            throw Exception(
+                'Invalid response format: ${jsonResponse.runtimeType}');
+          }
+        } catch (jsonError) {
+          print('JSON parsing error: $jsonError');
+          print('Raw response body: ${response.body}');
+          throw Exception('Failed to parse JSON response: $jsonError');
         }
       } else if (response.statusCode == 401) {
         // Clear invalid token and throw authentication error
@@ -934,6 +991,35 @@ class ApiService {
         'success': false,
         'message': 'Network error: $e',
       };
+    }
+  }
+
+  // Test authentication status
+  Future<bool> testAuthentication() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      String? token =
+          prefs.getString('authToken') ?? prefs.getString('auth_token');
+
+      if (token == null) {
+        print('No token found');
+        return false;
+      }
+
+      print('Testing authentication with token...');
+      final response = await http.get(
+        Uri.parse('$_baseUrl/v1/profile'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      print('Auth test response: ${response.statusCode}');
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Auth test error: $e');
+      return false;
     }
   }
 }
